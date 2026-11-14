@@ -1,6 +1,12 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -26,9 +32,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -63,10 +75,21 @@ fun SensorCalibrationDialog(
     }
 
     val statusInstruction = when (calibrationStep) {
-        0 -> "Wave your hand within 2 inches of the top of your phone (near the earpiece)."
+        0 -> "Wave your hand within 2 inches of the top of your phone (near the earpiece sensor)."
         1 -> "Detected! Now pull your hand back to complete the test cycle."
-        else -> "Verified! Place your phone face-up under your chest. Each full down-and-up motion counts 1 rep without double-counting."
+        else -> "Verified! Place your phone face-up on the floor under your chest. Each full down-and-up motion counts 1 rep."
     }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "placement_demo")
+    val chestDipOffset by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "chest_dip"
+    )
 
     Dialog(onDismissRequest = onDone) {
         Surface(
@@ -78,11 +101,11 @@ fun SensorCalibrationDialog(
             Column(
                 modifier = Modifier.padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(64.dp)
+                        .size(56.dp)
                         .background(statusColor.copy(0.15f), CircleShape)
                         .border(2.dp, statusColor, CircleShape),
                     contentAlignment = Alignment.Center
@@ -91,7 +114,7 @@ fun SensorCalibrationDialog(
                         imageVector = if (isCalibrated) Icons.Default.CheckCircle else Icons.Default.Sensors,
                         contentDescription = "Proximity sensor calibration status",
                         tint = statusColor,
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size(30.dp)
                     )
                 }
 
@@ -111,6 +134,85 @@ fun SensorCalibrationDialog(
                         color = TextWhite,
                         textAlign = TextAlign.Center
                     )
+                }
+
+                // Visual "Place phone on floor under chest" diagram
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(CardSurface, RoundedCornerShape(14.dp))
+                        .padding(vertical = 10.dp, horizontal = 14.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(72.dp)
+                        ) {
+                            val w = size.width
+                            val h = size.height
+                            val floorY = h - 10.dp.toPx()
+
+                            // Floor line
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.25f),
+                                start = Offset(w * 0.12f, floorY),
+                                end = Offset(w * 0.88f, floorY),
+                                strokeWidth = 2.dp.toPx(),
+                                cap = StrokeCap.Round
+                            )
+
+                            // Phone lying flat on floor
+                            val phoneW = 84.dp.toPx()
+                            val phoneH = 8.dp.toPx()
+                            val phoneX = (w - phoneW) / 2f
+                            val phoneY = floorY - phoneH - 2.dp.toPx()
+                            drawRoundRect(
+                                color = Color(0xFF334155),
+                                topLeft = Offset(phoneX, phoneY),
+                                size = Size(phoneW, phoneH),
+                                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                            )
+
+                            // Top-edge proximity sensor zone glowing
+                            val sensorCenterX = phoneX + phoneW * 0.25f
+                            drawCircle(
+                                color = if (isSensorNear) NeonGreen else AquaBlue,
+                                radius = 4.dp.toPx(),
+                                center = Offset(sensorCenterX, phoneY)
+                            )
+
+                            // Animated chest/hand bar moving down & up over sensor
+                            val topY = 12.dp.toPx()
+                            val lowY = phoneY - 14.dp.toPx()
+                            val animY = topY + (lowY - topY) * chestDipOffset
+
+                            drawLine(
+                                color = NeonGreen.copy(alpha = 0.45f),
+                                start = Offset(sensorCenterX, animY + 6.dp.toPx()),
+                                end = Offset(sensorCenterX, phoneY - 4.dp.toPx()),
+                                strokeWidth = 1.5.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
+                            )
+
+                            drawRoundRect(
+                                color = if (isCalibrated) NeonGreen else AquaBlue,
+                                topLeft = Offset(w * 0.28f, animY - 6.dp.toPx()),
+                                size = Size(w * 0.44f, 10.dp.toPx()),
+                                cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())
+                            )
+                        }
+                        Text(
+                            text = "Place phone face-up under chest • Top edge detects rep",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextGray,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
 
                 // Live reading pill

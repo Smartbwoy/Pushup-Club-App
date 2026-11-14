@@ -128,16 +128,16 @@ fun ShareProgressDialog(
             val pct = if (weeklyTarget > 0) ((weeklyPushUps * 100f) / weeklyTarget).toInt() else 0
             "$pct% of my $weeklyTarget-rep weekly goal"
         }
-        ShareCardType.STREAK -> "Showing up day after day on PushUp Pro"
+        ShareCardType.STREAK -> "Showing up day after day on Pushup Club"
         ShareCardType.PERSONAL_BEST -> "Single-session personal best unlocked"
         ShareCardType.CHALLENGE -> "Can you beat $selectedChallengeTarget push-ups today?"
     }
 
     val shareMessage = when (selectedType) {
-        ShareCardType.WEEKLY -> "Logged $weeklyPushUps push-ups this week toward my $weeklyTarget-rep goal on PushUp Pro!"
-        ShareCardType.STREAK -> "On a $streakDays-day push-up streak with PushUp Pro. Keeping the momentum going!"
-        ShareCardType.PERSONAL_BEST -> "Hit a new personal best of $personalBest push-ups in one session on PushUp Pro!"
-        ShareCardType.CHALLENGE -> "PushUp Pro Challenge: Can you knock out $selectedChallengeTarget push-ups today? Reply with your count!"
+        ShareCardType.WEEKLY -> "Logged $weeklyPushUps push-ups this week toward my $weeklyTarget-rep goal on Pushup Club!"
+        ShareCardType.STREAK -> "On a $streakDays-day push-up streak with Pushup Club. Keeping the momentum going!"
+        ShareCardType.PERSONAL_BEST -> "Hit a new personal best of $personalBest push-ups in one session on Pushup Club!"
+        ShareCardType.CHALLENGE -> "Pushup Club Challenge: Can you knock out $selectedChallengeTarget push-ups today? Reply with your count!"
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -315,7 +315,7 @@ fun ShareProgressDialog(
                                 .padding(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "PUSHUP PRO",
+                                text = "PUSHUP CLUB",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Black,
                                 color = TextWhite.copy(0.85f),
@@ -442,10 +442,10 @@ private fun shareCardAndText(
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             letterSpacing = 0.18f
         }
-        canvas.drawText("PUSHUP PRO", centerX, 920f, brandPaint)
+        canvas.drawText("PUSHUP CLUB", centerX, 920f, brandPaint)
 
         val cardsDir = File(context.cacheDir, "shared_cards").apply { mkdirs() }
-        val file = File(cardsDir, "pushup_pro_card.png")
+        val file = File(cardsDir, "pushup_club_card.png")
         FileOutputStream(file).use { out ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
         }
@@ -470,5 +470,5 @@ private fun shareCardAndText(
         }
     }
 
-    context.startActivity(Intent.createChooser(shareIntent, "Share your PushUp Pro progress"))
+    context.startActivity(Intent.createChooser(shareIntent, "Share your Pushup Club progress"))
 }

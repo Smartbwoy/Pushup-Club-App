@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,11 +27,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -53,7 +59,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -88,10 +98,12 @@ fun ScheduleScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
 
     val plans by viewModel.plans.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
     val milestones by viewModel.milestones.collectAsState()
+    val suggestedTrainingTime by viewModel.suggestedTrainingTime.collectAsState()
 
     var weeklyTargetInput by remember { mutableStateOf("") }
     var voiceCoachEnabled by remember { mutableStateOf(true) }
@@ -101,6 +113,10 @@ fun ScheduleScreen(
     }
     var permissionDeniedPrompt by remember { mutableStateOf(false) }
     var showInfoPrivacyDialog by remember { mutableStateOf(false) }
+    var showReminderHelpDialog by remember { mutableStateOf(false) }
+    var testNotificationNote by remember { mutableStateOf("") }
+    var backupStatusMessage by remember { mutableStateOf("") }
+    var backupStatusError by remember { mutableStateOf(false) }
 
     // Synchronize local states cleanly when DB updates
     LaunchedEffect(preferences) {
@@ -143,6 +159,51 @@ fun ScheduleScreen(
     }
 
     var activeDayEditId by remember { mutableStateOf<Int?>(null) }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    val json = viewModel.buildBackupJson()
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { stream ->
+                            stream.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: throw IllegalStateException("Unable to open destination file.")
+                    }
+                    backupStatusError = false
+                    backupStatusMessage = "Backup exported to JSON successfully."
+                } catch (e: Exception) {
+                    backupStatusError = true
+                    backupStatusMessage = "Export failed: ${e.message ?: "Unknown error"}"
+                }
+            }
+        }
+    }
+
+    val restoreBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    val json = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use {
+                            it.readText()
+                        } ?: ""
+                    }
+                    viewModel.restoreBackupFromJson(json) { success, message ->
+                        backupStatusError = !success
+                        backupStatusMessage = message
+                    }
+                } catch (e: Exception) {
+                    backupStatusError = true
+                    backupStatusMessage = "Restore failed: ${e.message ?: "Unknown error"}"
+                }
+            }
+        }
+    }
 
     val plannedTotalReps = plans.filter { it.isEnabled }.sumOf { it.dailyTarget }
     val activeDaysCount = plans.count { it.isEnabled }
@@ -438,6 +499,143 @@ fun ScheduleScreen(
                                     }
                                 }
                             }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Quick Test Alert & Battery Optimization Help row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = { showReminderHelpDialog = true },
+                                    modifier = Modifier.testTag("reminder_help_button")
+                                ) {
+                                    Text(
+                                        text = "Reminder didn't fire?",
+                                        color = AquaBlue,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                            !ReminderScheduler.hasNotificationPermission(context)
+                                        ) {
+                                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        } else {
+                                            val sent = ReminderScheduler.sendTestNotification(context)
+                                            testNotificationNote = if (sent) {
+                                                "Test notification sent!"
+                                            } else {
+                                                "Unable to post notification — check system settings."
+                                            }
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, NeonGreen.copy(0.4f)),
+                                    modifier = Modifier.testTag("send_test_notification_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.NotificationsActive,
+                                        contentDescription = null,
+                                        tint = NeonGreen,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Send Test Alert",
+                                        color = NeonGreen,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            if (testNotificationNote.isNotEmpty()) {
+                                Text(
+                                    text = testNotificationNote,
+                                    color = NeonGreen,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Smart Adaptive Reminder Timing Nudge
+                val learnedTime = suggestedTrainingTime
+                val needsTimingSync = learnedTime != null && plans.any { it.isEnabled && it.workoutTime != learnedTime }
+                if (learnedTime != null && needsTimingSync) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = CardSurface),
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, AquaBlue.copy(0.35f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(AquaBlue.copy(0.14f), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Schedule,
+                                            contentDescription = null,
+                                            tint = AquaBlue,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "SMART TIMING NUDGE",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = AquaBlue,
+                                            letterSpacing = 0.5.sp
+                                        )
+                                        Text(
+                                            text = "You usually train around $learnedTime. Match reminders to $learnedTime?",
+                                            fontSize = 12.sp,
+                                            color = TextWhite,
+                                            lineHeight = 16.sp
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Button(
+                                    onClick = { viewModel.applySuggestedTrainingTime(learnedTime) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AquaBlue),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .height(48.dp)
+                                        .testTag("apply_suggested_time_button")
+                                ) {
+                                    Text(
+                                        text = "Apply",
+                                        color = Color(0xFF002438),
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -468,6 +666,92 @@ fun ScheduleScreen(
                             activeDayEditId = if (isEditing) null else plan.dayOfWeek
                         }
                     )
+                }
+
+                // Offline JSON Backup & Restore Card
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = CardSurface),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(0.08f))
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "BACKUP & RESTORE",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Black,
+                                color = TextWhite,
+                                letterSpacing = 0.5.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Export your workouts, schedule, 30-day challenge, and settings to a JSON file, or restore on a new phone.",
+                                fontSize = 11.sp,
+                                color = TextGray,
+                                lineHeight = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        exportBackupLauncher.launch("pushup-club-backup.json")
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("export_backup_button"),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NeonGreen,
+                                        contentColor = Color(0xFF003818)
+                                    ),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Download,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Export JSON", fontWeight = FontWeight.Black, fontSize = 12.sp)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        restoreBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("restore_backup_button"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, AquaBlue.copy(0.5f))
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.UploadFile,
+                                        contentDescription = null,
+                                        tint = AquaBlue,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Restore JSON", color = AquaBlue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
+
+                            if (backupStatusMessage.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = backupStatusMessage,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (backupStatusError) FireOrange else NeonGreen
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Discreet App Info, Milestones & Privacy Footer Card
@@ -520,6 +804,76 @@ fun ScheduleScreen(
             AppInfoPrivacyDialog(
                 milestones = milestones,
                 onDismiss = { showInfoPrivacyDialog = false }
+            )
+        }
+
+        if (showReminderHelpDialog) {
+            AlertDialog(
+                onDismissRequest = { showReminderHelpDialog = false },
+                title = {
+                    Text(
+                        text = "Reminders Not Firing?",
+                        fontWeight = FontWeight.Bold,
+                        color = TextWhite
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Some phones (especially Samsung, Xiaomi, and Tecno) pause background alarms to save battery.",
+                            color = TextGray,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                        Text(
+                            text = "1. Ensure Notifications are allowed for Pushup Club.\n2. Set Battery usage to \"Unrestricted\" so scheduled reminders arrive on time.\n3. Confirm at least one workout day is switched on below.",
+                            color = TextWhite,
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val batteryIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                            }
+                            try {
+                                context.startActivity(batteryIntent)
+                            } catch (_: Exception) {
+                                try {
+                                    context.startActivity(fallbackIntent)
+                                } catch (_: Exception) {}
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen)
+                    ) {
+                        Text("Battery Settings", color = Color(0xFF003818), fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(
+                            onClick = {
+                                val notifIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                }
+                                try {
+                                    context.startActivity(notifIntent)
+                                } catch (_: Exception) {}
+                            }
+                        ) {
+                            Text("Notification Settings", color = AquaBlue)
+                        }
+                        TextButton(onClick = { showReminderHelpDialog = false }) {
+                            Text("Close", color = TextWhite)
+                        }
+                    }
+                },
+                containerColor = CardSurfaceElevated,
+                shape = RoundedCornerShape(16.dp)
             )
         }
     }

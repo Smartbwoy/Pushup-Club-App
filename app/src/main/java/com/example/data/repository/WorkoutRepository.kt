@@ -1,5 +1,6 @@
 package com.example.data.repository
 
+import com.example.data.backup.BackupPayload
 import com.example.data.db.WorkoutDao
 import com.example.data.model.ChallengeGoal
 import com.example.data.model.DailyPlan
@@ -76,9 +77,35 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
         return workoutDao.getAllDailyPlansSync()
     }
 
+    suspend fun getAllSessionsSync(): List<WorkoutSession> {
+        ensureInitialized()
+        return workoutDao.getAllSessionsSync()
+    }
+
     suspend fun getUserPreferencesSync(): UserPreferences? {
         ensureInitialized()
         return workoutDao.getUserPreferences()
+    }
+
+    suspend fun restoreFromBackup(payload: BackupPayload) {
+        ensureInitialized()
+        workoutDao.insertUserPreferences(payload.preferences.copy(id = 1, hasCompletedOnboarding = true))
+        if (payload.dailyPlans.isNotEmpty()) {
+            workoutDao.insertDailyPlans(payload.dailyPlans)
+        }
+        workoutDao.clearAllSessions()
+        if (payload.sessions.isNotEmpty()) {
+            workoutDao.insertSessions(payload.sessions)
+        }
+        recalculateProgress()
+    }
+
+    suspend fun applyTimeToEnabledDays(timeStr: String) {
+        ensureInitialized()
+        val updated = workoutDao.getAllDailyPlansSync().map { plan ->
+            if (plan.isEnabled) plan.copy(workoutTime = timeStr) else plan
+        }
+        workoutDao.insertDailyPlans(updated)
     }
 
     suspend fun logSession(session: WorkoutSession) {
@@ -160,10 +187,11 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
     suspend fun recalculateProgress() {
         val sessions = workoutDao.getAllSessions().firstOrNull() ?: emptyList()
         val goals = workoutDao.getAllChallengeGoals().firstOrNull() ?: emptyList()
+        val plans = workoutDao.getAllDailyPlansSync()
 
         val totalPushUps = sessions.sumOf { it.totalPushUps }
         val maxSingleSession = sessions.maxOfOrNull { it.totalPushUps } ?: 0
-        val currentStreak = calculateStreak(sessions)
+        val currentStreak = calculateStreak(sessions, plans)
 
         val updatedGoals = goals.map { goal ->
             val newValue = when (goal.type) {
@@ -179,42 +207,85 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
         workoutDao.insertChallengeGoals(updatedGoals)
     }
 
-    fun calculateStreak(sessions: List<WorkoutSession>): Int {
+    /**
+     * Calculates the current unbroken workout streak using DST-safe Calendar arithmetic.
+     * When [plans] has active days configured (e.g. Mon/Wed/Fri), scheduled rest days
+     * do not break the streak; missing a scheduled training day breaks it.
+     */
+    fun calculateStreak(
+        sessions: List<WorkoutSession>,
+        plans: List<DailyPlan> = emptyList(),
+        referenceTimeMillis: Long = System.currentTimeMillis()
+    ): Int {
         if (sessions.isEmpty()) return 0
         val sdf = SimpleDateFormat("yyyyMMdd", Locale.US)
 
-        val uniqueDays = sessions.map { sdf.format(Date(it.timestamp)) }
-            .distinct()
-            .sortedDescending()
+        val loggedDayKeys = sessions.map { sdf.format(Date(it.timestamp)) }.toSet()
+        val earliestDayTime = sessions.minOf { it.timestamp }
+        val earliestCal = Calendar.getInstance().apply {
+            timeInMillis = earliestDayTime
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
 
-        if (uniqueDays.isEmpty()) return 0
+        val scheduledCalendarDays = plans
+            .filter { it.isEnabled }
+            .map { planDayToCalendarDay(it.dayOfWeek) }
+            .toSet()
 
-        val todayStr = sdf.format(Date())
-        val yesterdayStr = sdf.format(Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000))
-
-        val lastActiveDay = uniqueDays.first()
-        if (lastActiveDay != todayStr && lastActiveDay != yesterdayStr) {
-            return 0
+        val checkCal = Calendar.getInstance().apply {
+            timeInMillis = referenceTimeMillis
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
 
         var streak = 0
-        var currentCheckMillis = System.currentTimeMillis()
-        var checkDayStr = lastActiveDay
-        var checkIndex = 0
+        var seenFirstWorkout = false
+        var safetyDays = 0
 
-        while (checkIndex < uniqueDays.size) {
-            val idx = uniqueDays.indexOf(checkDayStr)
-            if (idx != -1) {
+        while (checkCal.timeInMillis >= earliestCal.timeInMillis && safetyDays < 3660) {
+            val dayKey = sdf.format(checkCal.time)
+            val isToday = safetyDays == 0
+            val calDayOfWeek = checkCal.get(Calendar.DAY_OF_WEEK)
+            val isScheduledDay = scheduledCalendarDays.isEmpty() || (calDayOfWeek in scheduledCalendarDays)
+
+            if (dayKey in loggedDayKeys) {
                 streak++
-                currentCheckMillis = sdf.parse(checkDayStr)?.time ?: currentCheckMillis
-                checkDayStr = sdf.format(Date(currentCheckMillis - 24L * 60 * 60 * 1000))
-                checkIndex++
+                seenFirstWorkout = true
+            } else if (!seenFirstWorkout) {
+                // Grace for today if user hasn't trained yet today, and for unscheduled rest days
+                if (!isToday && isScheduledDay) {
+                    return 0
+                }
             } else {
-                break
+                // Already in an active streak: only a missed scheduled day breaks it
+                if (isScheduledDay) {
+                    break
+                }
             }
+
+            checkCal.add(Calendar.DAY_OF_YEAR, -1)
+            safetyDays++
         }
 
         return streak
+    }
+
+    private fun planDayToCalendarDay(planDayOfWeek: Int): Int {
+        return when (planDayOfWeek) {
+            1 -> Calendar.MONDAY
+            2 -> Calendar.TUESDAY
+            3 -> Calendar.WEDNESDAY
+            4 -> Calendar.THURSDAY
+            5 -> Calendar.FRIDAY
+            6 -> Calendar.SATURDAY
+            7 -> Calendar.SUNDAY
+            else -> Calendar.MONDAY
+        }
     }
 
     companion object {
@@ -239,6 +310,33 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
             return sessions
                 .filter { keySdf.format(Date(it.timestamp)) in validDayKeys }
                 .sumOf { it.totalPushUps }
+        }
+
+        fun calculateTodayPushUps(
+            sessions: List<WorkoutSession>,
+            referenceTimeMillis: Long = System.currentTimeMillis()
+        ): Int {
+            if (sessions.isEmpty()) return 0
+            val keySdf = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+            val todayKey = keySdf.format(Date(referenceTimeMillis))
+            return sessions
+                .filter { keySdf.format(Date(it.timestamp)) == todayKey }
+                .sumOf { it.totalPushUps }
+        }
+
+        /**
+         * Learns the user's most frequent training hour once at least 3 sessions are logged.
+         * Returns formatted "HH:00" string or null if not enough history.
+         */
+        fun detectPreferredTrainingTime(sessions: List<WorkoutSession>): String? {
+            if (sessions.size < 3) return null
+            val hourCounts = sessions.groupingBy { session ->
+                Calendar.getInstance().apply { timeInMillis = session.timestamp }
+                    .get(Calendar.HOUR_OF_DAY)
+            }.eachCount()
+
+            val topHour = hourCounts.maxByOrNull { it.value }?.key ?: return null
+            return "${topHour.toString().padStart(2, '0')}:00"
         }
 
         /**

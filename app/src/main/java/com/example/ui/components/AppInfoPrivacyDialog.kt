@@ -73,7 +73,7 @@ fun AppInfoPrivacyDialog(
                 ) {
                     Column {
                         Text(
-                            text = "ABOUT PUSHUP PRO",
+                            text = "ABOUT PUSHUP CLUB",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Black,
                             color = TextWhite,
@@ -145,7 +145,7 @@ fun AppInfoPrivacyDialog(
                     onClick = {
                         val intent = Intent(Intent.ACTION_SENDTO).apply {
                             data = Uri.parse("mailto:$SUPPORT_EMAIL")
-                            putExtra(Intent.EXTRA_SUBJECT, "PushUp Pro v${BuildConfig.VERSION_NAME} Support")
+                            putExtra(Intent.EXTRA_SUBJECT, "Pushup Club v${BuildConfig.VERSION_NAME} Support")
                         }
                         try {
                             context.startActivity(intent)

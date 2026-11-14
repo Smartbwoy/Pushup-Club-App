@@ -135,6 +135,37 @@ object ReminderScheduler {
         }
     }
 
+    fun sendTestNotification(context: Context): Boolean {
+        if (!hasNotificationPermission(context)) return false
+        createNotificationChannel(context)
+
+        val tapIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            999,
+            tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification_pushup)
+            .setContentTitle("Pushup Club Test Reminder")
+            .setContentText("Notifications are working! Your scheduled training alerts will look like this.")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(contentPendingIntent)
+            .build()
+
+        return try {
+            NotificationManagerCompat.from(context).notify(REQUEST_CODE_BASE + 99, notification)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
     fun parseTimeOrNull(timeStr: String): Pair<Int, Int>? {
         val parts = timeStr.trim().split(":")
         if (parts.size != 2) return null

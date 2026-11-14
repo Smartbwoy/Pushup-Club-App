@@ -8,6 +8,10 @@ import android.hardware.SensorManager
 import android.speech.tts.TextToSpeech
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.adaptive.AdaptiveProgramManager
+import com.example.data.backup.BackupManager
+import com.example.data.challenge.ThirtyDayChallengeManager
+import com.example.data.challenge.ThirtyDayChallengeState
 import com.example.data.db.AppDatabase
 import com.example.data.model.ChallengeGoal
 import com.example.data.model.DailyPlan
@@ -18,12 +22,14 @@ import com.example.data.repository.WorkoutRepository
 import com.example.data.tracking.MilestoneSnapshot
 import com.example.data.tracking.MilestoneTracker
 import com.example.notifications.ReminderScheduler
+import com.example.widget.WorkoutWidgetProvider
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -33,6 +39,8 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     private val db = AppDatabase.getInstance(application)
     private val repository = WorkoutRepository(db.workoutDao)
     private val milestoneTracker = MilestoneTracker(application)
+    private val challengeManager = ThirtyDayChallengeManager(application)
+    private val adaptiveProgramManager = AdaptiveProgramManager(application)
 
     // TTS Voice Coach
     private var tts: TextToSpeech? = null
@@ -104,8 +112,8 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     val milestones: StateFlow<MilestoneSnapshot> = milestoneTracker.snapshot
 
     // Metrics
-    val currentStreak: StateFlow<Int> = sessions.map {
-        repository.calculateStreak(it)
+    val currentStreak: StateFlow<Int> = combine(sessions, plans) { sessionList, planList ->
+        repository.calculateStreak(sessionList, planList)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     val personalBest: StateFlow<Int> = sessions.map { list ->
@@ -119,6 +127,13 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     val weeklyPushUps: StateFlow<Int> = sessions.map { list ->
         WorkoutRepository.calculateWeeklyPushUps(list)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val thirtyDayChallengeState: StateFlow<ThirtyDayChallengeState> = challengeManager.state
+    val adaptiveMultipliers: StateFlow<Map<String, Float>> = adaptiveProgramManager.multipliers
+
+    val suggestedTrainingTime: StateFlow<String?> = sessions.map { list ->
+        WorkoutRepository.detectPreferredTrainingTime(list)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     // Workout Progress state
     private val _activeProgram = MutableStateFlow<TrainingProgram?>(null)
@@ -145,6 +160,9 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     // Proximity Counting & Calibration State
     private val _isProximityCountingEnabled = MutableStateFlow(false)
     val isProximityCountingEnabled = _isProximityCountingEnabled.asStateFlow()
+
+    private val _isCameraCountingEnabled = MutableStateFlow(false)
+    val isCameraCountingEnabled = _isCameraCountingEnabled.asStateFlow()
 
     private val _showSensorCalibrationDialog = MutableStateFlow(false)
     val showSensorCalibrationDialog = _showSensorCalibrationDialog.asStateFlow()
@@ -187,6 +205,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (enabled) {
+            _isCameraCountingEnabled.value = false
             triggerHaptic(60L)
             wasNear = false
             hasSeenFarSinceEnable = false
@@ -195,10 +214,20 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
             _isProximityCountingEnabled.value = true
             _showSensorCalibrationDialog.value = true
             proximitySensor?.let {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
             }
         } else {
             disableProximityCounting()
+        }
+    }
+
+    fun toggleCameraCounting(enabled: Boolean) {
+        if (enabled) {
+            disableProximityCounting()
+            triggerHaptic(60L)
+            _isCameraCountingEnabled.value = true
+        } else {
+            _isCameraCountingEnabled.value = false
         }
     }
 
@@ -225,6 +254,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
 
     fun switchToManualTapCounting() {
         disableProximityCounting()
+        _isCameraCountingEnabled.value = false
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
@@ -294,6 +324,35 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         milestoneTracker.recordWorkoutStarted()
         triggerHaptic(80L)
         speak("Starting ${program.name}. Set one target is ${program.sets[0]} reps. Let's do it!")
+    }
+
+    fun startThirtyDayChallenge(initialMaxReps: Int) {
+        challengeManager.startChallenge(initialMaxReps)
+    }
+
+    fun startThirtyDayChallengeWorkout() {
+        val state = challengeManager.state.value
+        if (!state.isStarted || state.isCompleted) return
+        val day = state.currentDay
+        val sets = ThirtyDayChallengeManager.buildSetsForDay(state.initialMaxReps, day)
+        val isRecovery = day % 5 == 0 && day < 30
+        val program = TrainingProgram(
+            id = "${ThirtyDayChallengeManager.PROGRAM_ID_PREFIX}$day",
+            name = "30-Day Challenge: Day $day",
+            description = if (isRecovery) "Active recovery day at 65% volume" else "Day $day of 30 progressive push-up challenge",
+            difficulty = "Challenge",
+            sets = sets,
+            restTimeSeconds = if (isRecovery) 45 else 35
+        )
+        startProgramWorkout(program)
+    }
+
+    fun recordThirtyDayFinalRetest(finalMaxReps: Int) {
+        challengeManager.recordFinalRetest(finalMaxReps)
+    }
+
+    fun resetThirtyDayChallenge() {
+        challengeManager.resetChallenge()
     }
 
     fun appendManualSet(targetReps: Int) {
@@ -405,6 +464,18 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         proceedToNextSet()
     }
 
+    fun undoCompleteSet() {
+        if (_workoutState.value != "REST") return
+        restJob?.cancel()
+        val index = _currentSetIndex.value
+        val previousReps = _completedReps.value.getOrElse(index) { 0 }
+        _currentRepCount.value = previousReps
+        _restTimeLeft.value = 0
+        _workoutState.value = "RUNNING"
+        hasSeenFarSinceEnable = !wasNear
+        triggerHaptic(40L)
+    }
+
     private fun proceedToNextSet() {
         _currentSetIndex.value += 1
         _currentRepCount.value = 0
@@ -419,6 +490,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     fun finishWorkout() {
         restJob?.cancel()
         disableProximityCounting()
+        _isCameraCountingEnabled.value = false
         _workoutState.value = "FINISHED"
 
         val finalCompleted = _completedReps.value.toMutableList()
@@ -433,7 +505,9 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         val totalPushups = activeCompleted.sum()
         val setsRecorded = activeCompleted.size.coerceAtLeast(1)
         val repsString = activeCompleted.joinToString(",")
-        val restTime = _activeProgram.value?.restTimeSeconds ?: 30
+        val activeProg = _activeProgram.value
+        val restTime = activeProg?.restTimeSeconds ?: 30
+        val prescribedTotal = _activeSets.value.sum()
 
         viewModelScope.launch {
             if (totalPushups > 0) {
@@ -442,10 +516,21 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
                     setsCount = setsRecorded,
                     repsListString = repsString,
                     restTimeSeconds = restTime,
-                    programId = _activeProgram.value?.id
+                    programId = activeProg?.id
                 )
                 repository.logSession(session)
+                val challengeDay = ThirtyDayChallengeManager.parseChallengeDay(activeProg?.id)
+                if (challengeDay != null) {
+                    challengeManager.recordDayCompleted(challengeDay, totalPushups)
+                } else if (activeProg != null) {
+                    adaptiveProgramManager.recordProgramOutcome(
+                        programId = activeProg.id,
+                        targetTotalReps = prescribedTotal,
+                        completedTotalReps = totalPushups
+                    )
+                }
                 milestoneTracker.recordWorkoutSaved()
+                WorkoutWidgetProvider.updateAllWidgets(getApplication())
                 triggerHaptic(150L)
                 speak("Success! You crushed $totalPushups push-ups in total. Awesome work!")
             } else {
@@ -457,6 +542,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     fun cancelWorkout() {
         restJob?.cancel()
         disableProximityCounting()
+        _isCameraCountingEnabled.value = false
         _workoutState.value = "IDLE"
         _activeProgram.value = null
         _activeSets.value = emptyList()
@@ -479,6 +565,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
             repository.logSession(session)
             milestoneTracker.recordWorkoutStarted()
             milestoneTracker.recordWorkoutSaved()
+            WorkoutWidgetProvider.updateAllWidgets(getApplication())
             speak("Logged $count push-ups offline.")
         }
     }
@@ -486,12 +573,14 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     fun deleteLoggedSession(session: WorkoutSession) {
         viewModelScope.launch {
             repository.deleteSession(session)
+            WorkoutWidgetProvider.updateAllWidgets(getApplication())
         }
     }
 
     fun clearHistory() {
         viewModelScope.launch {
             repository.clearAllData()
+            WorkoutWidgetProvider.updateAllWidgets(getApplication())
             speak("Workout logs completely refreshed.")
         }
     }
@@ -506,6 +595,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
                 plans = allPlans,
                 notificationsEnabled = prefs?.notificationsEnabled == true
             )
+            WorkoutWidgetProvider.updateAllWidgets(getApplication())
         }
     }
 
@@ -570,6 +660,66 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
             if (starter != null) {
                 startProgramWorkout(starter)
             } else {
+                startManualWorkout()
+            }
+        }
+    }
+
+    fun applySuggestedTrainingTime(timeStr: String) {
+        viewModelScope.launch {
+            repository.applyTimeToEnabledDays(timeStr)
+            val allPlans = repository.getAllDailyPlansSync()
+            val prefs = repository.getUserPreferencesSync()
+            ReminderScheduler.syncReminders(
+                context = getApplication(),
+                plans = allPlans,
+                notificationsEnabled = prefs?.notificationsEnabled == true
+            )
+        }
+    }
+
+    suspend fun buildBackupJson(): String {
+        val prefs = repository.getUserPreferencesSync() ?: UserPreferences()
+        val allPlans = repository.getAllDailyPlansSync()
+        val allSessions = repository.getAllSessionsSync()
+        return BackupManager.exportToJson(
+            preferences = prefs,
+            dailyPlans = allPlans,
+            sessions = allSessions,
+            challengeState = challengeManager.state.value,
+            adaptiveMultipliers = adaptiveProgramManager.getAllMultiplierMap()
+        )
+    }
+
+    fun restoreBackupFromJson(json: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val payload = BackupManager.parseBackupJson(json)
+            if (payload == null) {
+                onResult(false, "Invalid backup file format.")
+                return@launch
+            }
+            repository.restoreFromBackup(payload)
+            challengeManager.restoreState(payload.challengeState)
+            adaptiveProgramManager.restoreMultipliers(payload.adaptiveMultipliers)
+            val allPlans = repository.getAllDailyPlansSync()
+            val prefs = repository.getUserPreferencesSync()
+            ReminderScheduler.syncReminders(
+                context = getApplication(),
+                plans = allPlans,
+                notificationsEnabled = prefs?.notificationsEnabled == true
+            )
+            WorkoutWidgetProvider.updateAllWidgets(getApplication())
+            onResult(true, "Restored ${payload.sessions.size} workouts & settings.")
+        }
+    }
+
+    fun startWorkoutFromWidget() {
+        viewModelScope.launch {
+            val prefs = repository.getUserPreferencesSync()
+            if (prefs?.hasCompletedOnboarding == false) {
+                repository.markOnboardingCompleted()
+            }
+            if (_workoutState.value == "IDLE") {
                 startManualWorkout()
             }
         }

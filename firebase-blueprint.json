@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "UserClubProfile": {
+      "title": "UserClubProfile",
+      "description": "Signed-in athlete's summary metrics stored privately under their user ID.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID matching the document ID."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public athlete display name shown on club leaderboards."
+        },
+        "weeklyPushUps": {
+          "type": "integer",
+          "description": "Push-ups completed over the last 7 days."
+        },
+        "totalPushUps": {
+          "type": "integer",
+          "description": "Lifetime push-up total."
+        },
+        "streakDays": {
+          "type": "integer",
+          "description": "Current unbroken training streak in days."
+        },
+        "personalBest": {
+          "type": "integer",
+          "description": "Single-session push-up record."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "weeklyPushUps",
+        "totalPushUps",
+        "streakDays",
+        "personalBest",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Club": {
+      "title": "Club",
+      "description": "Social push-up club identified by a short uppercase join code with bounded member stats.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Club name (3 to 40 characters)."
+        },
+        "joinCode": {
+          "type": "string",
+          "description": "Uppercase alphanumeric code matching the document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the club creator."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list (max 50) of member UIDs."
+        },
+        "memberStats": {
+          "type": "object",
+          "description": "Map keyed by member UID storing leaderboard stats without PII."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "name",
+        "joinCode",
+        "ownerId",
+        "memberUids",
+        "memberStats",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserClubProfile"
+      },
+      "description": "Private athlete stats profile scoped strictly to userId."
+    },
+    "/clubs/{clubId}": {
+      "schema": {
+        "$ref": "#/entities/Club"
+      },
+      "description": "Pushup Club group document keyed by joinCode with bounded members and per-UID leaderboard map."
+    }
+  }
+}

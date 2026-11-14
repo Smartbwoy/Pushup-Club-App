@@ -1,10 +1,12 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
@@ -14,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -35,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.WorkoutViewModel
 import com.example.ui.screens.AchievementsScreen
+import com.example.ui.screens.ClubsScreen
 import com.example.ui.screens.HistoryScreen
 import com.example.ui.screens.OnboardingScreen
 import com.example.ui.screens.ScheduleScreen
@@ -43,17 +47,33 @@ import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NeonGreen
 import com.example.ui.theme.TextGray
+import com.example.widget.WorkoutWidgetProvider
 
 class MainActivity : ComponentActivity() {
+    private val widgetStartTrigger = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (intent?.getBooleanExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT, false) == true) {
+            widgetStartTrigger.value = true
+            intent.removeExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT)
+        }
         setContent {
             MyApplicationTheme {
                 val viewModel: WorkoutViewModel = viewModel()
                 var currentTab by remember { mutableStateOf(0) }
                 val workoutState by viewModel.workoutState.collectAsState()
                 val preferences by viewModel.preferences.collectAsState()
+                val shouldStartFromWidget by widgetStartTrigger
+
+                LaunchedEffect(shouldStartFromWidget) {
+                    if (shouldStartFromWidget) {
+                        currentTab = 0
+                        viewModel.startWorkoutFromWidget()
+                        widgetStartTrigger.value = false
+                    }
+                }
 
                 val showOnboarding = preferences != null &&
                     preferences?.hasCompletedOnboarding == false &&
@@ -145,12 +165,27 @@ class MainActivity : ComponentActivity() {
                                     onClick = { currentTab = 3 },
                                     icon = {
                                         Icon(
+                                            imageVector = Icons.Default.Groups,
+                                            contentDescription = "Clubs",
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    },
+                                    label = { Text("Clubs", fontSize = 11.sp, fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Medium) },
+                                    colors = navItemColors,
+                                    modifier = Modifier.testTag("nav_clubs_tab")
+                                )
+
+                                NavigationBarItem(
+                                    selected = (currentTab == 4),
+                                    onClick = { currentTab = 4 },
+                                    icon = {
+                                        Icon(
                                             imageVector = Icons.Default.EmojiEvents,
                                             contentDescription = "Trophies",
                                             modifier = Modifier.size(24.dp)
                                         )
                                     },
-                                    label = { Text("Trophies", fontSize = 11.sp, fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Medium) },
+                                    label = { Text("Trophies", fontSize = 11.sp, fontWeight = if (currentTab == 4) FontWeight.Bold else FontWeight.Medium) },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_trophies_tab")
                                 )
@@ -170,7 +205,11 @@ class MainActivity : ComponentActivity() {
                                 viewModel = viewModel,
                                 modifier = Modifier.padding(innerPadding)
                             )
-                            3 -> AchievementsScreen(
+                            3 -> ClubsScreen(
+                                workoutViewModel = viewModel,
+                                modifier = Modifier.padding(innerPadding)
+                            )
+                            4 -> AchievementsScreen(
                                 viewModel = viewModel,
                                 modifier = Modifier.padding(innerPadding)
                             )
@@ -178,6 +217,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT, false)) {
+            widgetStartTrigger.value = true
+            intent.removeExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT)
         }
     }
 }

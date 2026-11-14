@@ -1,6 +1,10 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -28,12 +32,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -67,6 +74,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,18 +90,27 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.example.data.adaptive.AdaptiveProgramManager
 import com.example.data.model.TrainingProgram
 import com.example.data.repository.WorkoutRepository
 import com.example.ui.WorkoutViewModel
+import com.example.ui.components.CameraRepCounterView
 import com.example.ui.components.SensorCalibrationDialog
 import com.example.ui.components.ShareCardType
 import com.example.ui.components.ShareProgressDialog
+import com.example.ui.components.ThirtyDayChallengeCard
 import com.example.ui.theme.AquaBlue
 import com.example.ui.theme.CardSurface
 import com.example.ui.theme.CardSurfaceElevated
@@ -117,6 +134,8 @@ fun WorkoutScreen(
     val best by viewModel.personalBest.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
     val workoutState by viewModel.workoutState.collectAsState()
+    val challengeState by viewModel.thirtyDayChallengeState.collectAsState()
+    val adaptiveMultipliers by viewModel.adaptiveMultipliers.collectAsState()
 
     val targetWeekly = preferences?.weeklyTarget ?: 100
     val progressPercent = if (targetWeekly > 0) {
@@ -127,10 +146,17 @@ fun WorkoutScreen(
     var showShareDialog by remember { mutableStateOf(false) }
 
     val preferredLevel = preferences?.experienceLevel ?: "Beginner"
-    val orderedPrograms = remember(preferredLevel) {
-        TrainingProgram.programs.sortedBy {
-            if (it.difficulty.equals(preferredLevel, ignoreCase = true)) 0 else 1
-        }
+    val adaptedPrograms = remember(preferredLevel, adaptiveMultipliers) {
+        TrainingProgram.programs
+            .sortedBy {
+                if (it.difficulty.equals(preferredLevel, ignoreCase = true)) 0 else 1
+            }
+            .map { program ->
+                AdaptiveProgramManager.adaptProgram(
+                    program = program,
+                    multiplier = adaptiveMultipliers[program.id] ?: 1.0f
+                )
+            }
     }
 
     Box(modifier = modifier.fillMaxSize().background(PitchBlack)) {
@@ -159,7 +185,7 @@ fun WorkoutScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "PRO",
+                                text = "CLUB",
                                 fontSize = 26.sp,
                                 fontWeight = FontWeight.Black,
                                 color = NeonGreen,
@@ -440,6 +466,17 @@ fun WorkoutScreen(
                 }
             }
 
+            // 30-Day Guided Challenge Card
+            item {
+                ThirtyDayChallengeCard(
+                    challengeState = challengeState,
+                    onStartChallenge = { maxReps -> viewModel.startThirtyDayChallenge(maxReps) },
+                    onStartChallengeDay = { viewModel.startThirtyDayChallengeWorkout() },
+                    onRecordFinalRetest = { finalMax -> viewModel.recordThirtyDayFinalRetest(finalMax) },
+                    onResetChallenge = { viewModel.resetThirtyDayChallenge() }
+                )
+            }
+
             // Quick Guides / Built-in Guided Programs Header
             item {
                 Row(
@@ -463,11 +500,12 @@ fun WorkoutScreen(
                 }
             }
 
-            items(orderedPrograms) { program ->
+            items(adaptedPrograms, key = { it.program.id }) { adaptedInfo ->
                 TrainingProgramItemCard(
-                    program = program,
-                    isRecommended = program.difficulty.equals(preferredLevel, ignoreCase = true),
-                    onStart = { viewModel.startProgramWorkout(program) }
+                    program = adaptedInfo.program,
+                    isRecommended = adaptedInfo.program.difficulty.equals(preferredLevel, ignoreCase = true),
+                    adaptiveBadge = adaptedInfo.statusBadge,
+                    onStart = { viewModel.startProgramWorkout(adaptedInfo.program) }
                 )
             }
 
@@ -571,6 +609,7 @@ fun StatMetricCard(
 fun TrainingProgramItemCard(
     program: TrainingProgram,
     isRecommended: Boolean = false,
+    adaptiveBadge: String? = null,
     onStart: () -> Unit
 ) {
     Card(
@@ -612,6 +651,23 @@ fun TrainingProgramItemCard(
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = badgeColor
+                            )
+                        }
+                    }
+                    if (adaptiveBadge != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        val isBoosted = adaptiveBadge.startsWith("ADAPTED")
+                        val adaptColor = if (isBoosted) NeonGreen else AquaBlue
+                        Box(
+                            modifier = Modifier
+                                .background(adaptColor.copy(0.14f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 7.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = adaptiveBadge,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black,
+                                color = adaptColor
                             )
                         }
                     }
@@ -834,6 +890,7 @@ fun WorkoutSessionOverlay(
     val currentRepCount by viewModel.currentRepCount.collectAsState()
     val restTimeLeft by viewModel.restTimeLeft.collectAsState()
     val handsFreeCounting by viewModel.isProximityCountingEnabled.collectAsState()
+    val cameraCounting by viewModel.isCameraCountingEnabled.collectAsState()
     val showCalibrationDialog by viewModel.showSensorCalibrationDialog.collectAsState()
     val isSensorNear by viewModel.isSensorNear.collectAsState()
     val calibrationStep by viewModel.calibrationStep.collectAsState()
@@ -842,8 +899,32 @@ fun WorkoutSessionOverlay(
     val personalBest by viewModel.personalBest.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
 
+    val context = LocalContext.current
+    var cameraFeedbackMsg by remember { mutableStateOf<String?>(null) }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            cameraFeedbackMsg = null
+            viewModel.toggleCameraCounting(true)
+        } else {
+            viewModel.toggleCameraCounting(false)
+            cameraFeedbackMsg = "Camera permission denied — tap circle or use proximity sensor."
+        }
+    }
+
     var showExitDialog by remember { mutableStateOf(false) }
     var showShareResultDialog by remember { mutableStateOf(false) }
+
+    // Keep screen awake during active workout or rest countdown
+    val hostView = LocalView.current
+    DisposableEffect(workoutState, hostView) {
+        val shouldKeepOn = (workoutState == "RUNNING" || workoutState == "REST")
+        hostView.keepScreenOn = shouldKeepOn
+        onDispose {
+            hostView.keepScreenOn = false
+        }
+    }
 
     // Intercept Back button during workout to prevent losing progress
     BackHandler(enabled = true) {
@@ -912,19 +993,18 @@ fun WorkoutSessionOverlay(
                 }
             }
 
-            // Sets Progress Indicator Strip
+            // Sets Progress Indicator Strip (scrollable when extra sets are appended)
             if (activeSets.isNotEmpty()) {
-                Row(
+                LazyRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    activeSets.forEachIndexed { idx, targetReps ->
+                    itemsIndexed(activeSets) { idx, targetReps ->
                         val isDone = idx < currentSetIndex
                         val isCurrent = idx == currentSetIndex
                         Box(
                             modifier = Modifier
-                                .padding(horizontal = 4.dp)
                                 .background(
                                     when {
                                         isDone -> NeonGreen
@@ -954,7 +1034,17 @@ fun WorkoutSessionOverlay(
                 }
             }
 
-            // Central Interactive Ring
+            // Central Interactive Ring (TalkBack + large fontScale safe)
+            val currentTarget = if (activeSets.isNotEmpty() && currentSetIndex < activeSets.size) activeSets[currentSetIndex] else 10
+            val fontScale = LocalDensity.current.fontScale
+            val heroRepFontSize = if (fontScale > 1.3f) (82f / fontScale * 1.15f).sp else 84.sp
+            val heroRestFontSize = if (fontScale > 1.3f) (70f / fontScale * 1.15f).sp else 72.sp
+            val ringSemanticsText = when (workoutState) {
+                "REST" -> "Resting. $restTimeLeft seconds remaining."
+                "RUNNING" -> "Rep counter: $currentRepCount of $currentTarget reps. Double tap to add one rep."
+                else -> "Workout finished. ${completedReps.sum()} total reps."
+            }
+
             Box(
                 modifier = Modifier
                     .size(260.dp)
@@ -971,12 +1061,15 @@ fun WorkoutSessionOverlay(
                         ),
                         CircleShape
                     )
+                    .semantics { contentDescription = ringSemanticsText }
                     .clickable(enabled = (workoutState == "RUNNING")) {
                         viewModel.incrementRep()
-                    },
+                    }
+                    .testTag("workout_rep_ring"),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
+                    modifier = Modifier.padding(horizontal = 16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     if (workoutState == "REST") {
@@ -984,31 +1077,33 @@ fun WorkoutSessionOverlay(
                             imageVector = Icons.Default.Timer,
                             contentDescription = null,
                             tint = FireOrange,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(34.dp)
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = "$restTimeLeft",
-                            fontSize = 72.sp,
+                            fontSize = heroRestFontSize,
                             fontWeight = FontWeight.Black,
                             color = FireOrange,
-                            lineHeight = 72.sp
+                            lineHeight = heroRestFontSize,
+                            maxLines = 1
                         )
                         Text(
                             text = "SECONDS REST",
                             fontSize = 11.sp,
                             color = TextGray,
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
+                            letterSpacing = 1.sp,
+                            maxLines = 1
                         )
                     } else if (workoutState == "RUNNING") {
-                        val currentTarget = if (activeSets.isNotEmpty() && currentSetIndex < activeSets.size) activeSets[currentSetIndex] else 10
                         Text(
                             text = "$currentRepCount",
-                            fontSize = 86.sp,
+                            fontSize = heroRepFontSize,
                             fontWeight = FontWeight.Black,
                             color = NeonGreen,
-                            lineHeight = 86.sp,
+                            lineHeight = heroRepFontSize,
+                            maxLines = 1,
                             modifier = Modifier.scale(pulseScale)
                         )
                         Text(
@@ -1016,7 +1111,8 @@ fun WorkoutSessionOverlay(
                             fontSize = 12.sp,
                             color = TextWhite,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 1.sp
+                            letterSpacing = 1.sp,
+                            maxLines = 1
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
@@ -1024,7 +1120,8 @@ fun WorkoutSessionOverlay(
                             fontSize = 10.sp,
                             color = NeonGreen.copy(0.8f),
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp
+                            letterSpacing = 0.5.sp,
+                            maxLines = 1
                         )
                     } else {
                         // Finished workout screen inside ring
@@ -1089,85 +1186,160 @@ fun WorkoutSessionOverlay(
                         }
                     }
 
-                    // Hands-Free proximity auto-counter card with sensor availability & calibration
+                    // Hands-Free proximity & Front-Camera optical auto-counter card
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = CardSurface),
                         shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, if (handsFreeCounting) NeonGreen.copy(0.3f) else Color.White.copy(0.06f))
+                        border = BorderStroke(
+                            1.dp,
+                            when {
+                                handsFreeCounting -> NeonGreen.copy(0.35f)
+                                cameraCounting -> AquaBlue.copy(0.45f)
+                                else -> Color.White.copy(0.06f)
+                            }
+                        )
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(
-                                    imageVector = if (viewModel.hasProximitySensor) Icons.Default.Sensors else Icons.Default.TouchApp,
-                                    contentDescription = "Sensor config",
-                                    tint = if (handsFreeCounting) NeonGreen else TextGray,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = if (viewModel.hasProximitySensor) "Hands-Free Sensor" else "Manual Tap Counter",
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (handsFreeCounting) NeonGreen else TextWhite
-                                    )
-                                    Text(
-                                        text = when {
-                                            !viewModel.hasProximitySensor -> "Proximity sensor unavailable — tap circle or +1 to count"
-                                            handsFreeCounting -> "Active • Counts 1 rep per full down-and-up"
-                                            else -> "Place phone under chest; calibrates before counting"
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = when {
+                                            cameraCounting -> Icons.Default.CameraAlt
+                                            viewModel.hasProximitySensor -> Icons.Default.Sensors
+                                            else -> Icons.Default.TouchApp
                                         },
-                                        fontSize = 10.sp,
-                                        color = TextGray
+                                        contentDescription = "Auto rep counter mode",
+                                        tint = when {
+                                            handsFreeCounting -> NeonGreen
+                                            cameraCounting -> AquaBlue
+                                            else -> TextGray
+                                        },
+                                        modifier = Modifier.size(24.dp)
                                     )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = when {
+                                                cameraCounting -> "Optical Camera Counter"
+                                                viewModel.hasProximitySensor -> "Hands-Free Sensor"
+                                                else -> "Manual Tap Counter"
+                                            },
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = when {
+                                                handsFreeCounting -> NeonGreen
+                                                cameraCounting -> AquaBlue
+                                                else -> TextWhite
+                                            }
+                                        )
+                                        Text(
+                                            text = when {
+                                                cameraCounting -> "Front camera tracks chest shadow dips cleanly"
+                                                !viewModel.hasProximitySensor -> "No proximity sensor — use Camera Mode or tap +1"
+                                                handsFreeCounting -> "Active • Counts 1 rep per full down-and-up"
+                                                else -> "Place phone under chest; calibrates before counting"
+                                            },
+                                            fontSize = 10.sp,
+                                            color = TextGray
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    // Camera optical fallback / toggle button
+                                    IconButton(
+                                        onClick = {
+                                            if (cameraCounting) {
+                                                viewModel.toggleCameraCounting(false)
+                                                cameraFeedbackMsg = null
+                                            } else {
+                                                val hasCameraPerm = ContextCompat.checkSelfPermission(
+                                                    context,
+                                                    Manifest.permission.CAMERA
+                                                ) == PackageManager.PERMISSION_GRANTED
+                                                if (hasCameraPerm) {
+                                                    cameraFeedbackMsg = null
+                                                    viewModel.toggleCameraCounting(true)
+                                                } else {
+                                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .background(
+                                                if (cameraCounting) AquaBlue.copy(0.2f) else CardSurfaceElevated,
+                                                CircleShape
+                                            )
+                                            .testTag("camera_mode_toggle")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CameraAlt,
+                                            contentDescription = if (cameraCounting) "Disable Camera Counter" else "Enable Front Camera Counter",
+                                            tint = if (cameraCounting) AquaBlue else TextGray,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    if (viewModel.hasProximitySensor) {
+                                        if (handsFreeCounting) {
+                                            TextButton(
+                                                onClick = { viewModel.openSensorCalibration() },
+                                                modifier = Modifier.testTag("calibrate_sensor_button")
+                                            ) {
+                                                Text("Test", color = AquaBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        Switch(
+                                            checked = handsFreeCounting,
+                                            onCheckedChange = {
+                                                cameraFeedbackMsg = null
+                                                viewModel.toggleProximityCounting(it)
+                                            },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = Color(0xFF003818),
+                                                checkedTrackColor = NeonGreen
+                                            ),
+                                            modifier = Modifier.testTag("proximity_switch")
+                                        )
+                                    }
                                 }
                             }
 
-                            if (viewModel.hasProximitySensor) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (handsFreeCounting) {
-                                        TextButton(
-                                            onClick = { viewModel.openSensorCalibration() },
-                                            modifier = Modifier.testTag("calibrate_sensor_button")
-                                        ) {
-                                            Text("Test", color = AquaBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                    Switch(
-                                        checked = handsFreeCounting,
-                                        onCheckedChange = { viewModel.toggleProximityCounting(it) },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = Color(0xFF003818),
-                                            checkedTrackColor = NeonGreen
-                                        ),
-                                        modifier = Modifier.testTag("proximity_switch")
-                                    )
-                                }
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .background(AquaBlue.copy(0.15f), RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = "TAP MODE",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Black,
-                                        color = AquaBlue
-                                    )
-                                }
+                            if (!cameraFeedbackMsg.isNullOrBlank()) {
+                                Text(
+                                    text = cameraFeedbackMsg.orEmpty(),
+                                    color = FireOrange,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                                )
                             }
                         }
+                    }
+
+                    if (cameraCounting && workoutState == "RUNNING") {
+                        CameraRepCounterView(
+                            isActive = true,
+                            onRepDetected = { viewModel.incrementRep() },
+                            onCameraError = { err ->
+                                viewModel.toggleCameraCounting(false)
+                                cameraFeedbackMsg = err
+                            }
+                        )
                     }
                 }
             }
@@ -1246,34 +1418,53 @@ fun WorkoutSessionOverlay(
                         }
                     }
                 } else if (workoutState == "REST") {
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OutlinedButton(
-                            onClick = { viewModel.addRestTime(15) },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(52.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.5.dp, FireOrange.copy(0.6f))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text("+15s Rest", fontWeight = FontWeight.Bold, color = FireOrange, fontSize = 13.sp)
+                            OutlinedButton(
+                                onClick = { viewModel.addRestTime(15) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.5.dp, FireOrange.copy(0.6f))
+                            ) {
+                                Text("+15s Rest", fontWeight = FontWeight.Bold, color = FireOrange, fontSize = 13.sp)
+                            }
+
+                            Button(
+                                onClick = { viewModel.skipRest() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = FireOrange,
+                                    contentColor = PitchBlack
+                                ),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .height(52.dp)
+                                    .testTag("skip_rest_button")
+                            ) {
+                                Text("SKIP REST", fontWeight = FontWeight.Black, fontSize = 14.sp)
+                            }
                         }
 
-                        Button(
-                            onClick = { viewModel.skipRest() },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = FireOrange,
-                                contentColor = PitchBlack
-                            ),
-                            shape = RoundedCornerShape(14.dp),
+                        TextButton(
+                            onClick = { viewModel.undoCompleteSet() },
                             modifier = Modifier
-                                .weight(1.3f)
-                                .height(52.dp)
-                                .testTag("skip_rest_button")
+                                .fillMaxWidth()
+                                .testTag("undo_complete_set")
                         ) {
-                            Text("SKIP REST", fontWeight = FontWeight.Black, fontSize = 14.sp)
+                            Text(
+                                text = "Undo Set & Resume Counting",
+                                color = TextGray,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
                 } else if (workoutState == "FINISHED") {

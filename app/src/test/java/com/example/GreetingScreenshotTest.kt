@@ -36,7 +36,7 @@ class GreetingScreenshotTest {
           contentAlignment = Alignment.Center
         ) {
           Text(
-            text = "PushUp Pro",
+            text = "Pushup Club",
             fontSize = 32.sp,
             fontWeight = FontWeight.Black,
             color = Color(0xFF00FF66)

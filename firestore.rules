@@ -1,0 +1,143 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidJoinCode(code) {
+      return code is string && code.size() >= 6 && code.size() <= 12 && code.matches('^[A-Z0-9]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidMemberEntry(entry) {
+      return entry is map &&
+             entry.keys().hasAll(['displayName', 'weeklyPushUps', 'totalPushUps', 'streakDays', 'personalBest']) &&
+             entry.keys().hasOnly(['displayName', 'weeklyPushUps', 'totalPushUps', 'streakDays', 'personalBest']) &&
+             entry.displayName is string && entry.displayName.size() >= 1 && entry.displayName.size() <= 30 &&
+             entry.weeklyPushUps is int && entry.weeklyPushUps >= 0 && entry.weeklyPushUps <= 100000 &&
+             entry.totalPushUps is int && entry.totalPushUps >= 0 && entry.totalPushUps <= 10000000 &&
+             entry.streakDays is int && entry.streakDays >= 0 && entry.streakDays <= 3660 &&
+             entry.personalBest is int && entry.personalBest >= 0 && entry.personalBest <= 50000;
+    }
+
+    function isValidUserClubProfile(data) {
+      return data.keys().hasAll(['userId', 'displayName', 'weeklyPushUps', 'totalPushUps', 'streakDays', 'personalBest', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'displayName', 'weeklyPushUps', 'totalPushUps', 'streakDays', 'personalBest', 'createdAt', 'updatedAt']) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 30 &&
+             data.weeklyPushUps is int && data.weeklyPushUps >= 0 && data.weeklyPushUps <= 100000 &&
+             data.totalPushUps is int && data.totalPushUps >= 0 && data.totalPushUps <= 10000000 &&
+             data.streakDays is int && data.streakDays >= 0 && data.streakDays <= 3660 &&
+             data.personalBest is int && data.personalBest >= 0 && data.personalBest <= 50000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidClub(data, clubId) {
+      return data.keys().hasAll(['name', 'joinCode', 'ownerId', 'memberUids', 'memberStats', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['name', 'joinCode', 'ownerId', 'memberUids', 'memberStats', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() >= 3 && data.name.size() <= 40 &&
+             isValidJoinCode(data.joinCode) && data.joinCode == clubId &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50 &&
+             data.memberUids[0] is string &&
+             data.memberStats is map && data.memberStats.size() >= 1 && data.memberStats.size() <= 50 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get, list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId &&
+                       isValidUserClubProfile(incoming());
+      allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidUserClubProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'weeklyPushUps', 'totalPushUps', 'streakDays', 'personalBest', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    match /clubs/{clubId} {
+      // List strictly restricted to clubs where the caller is already a member
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+      // Exact lookup by valid join code allows joining a club when the user knows the code
+      allow get: if isSignedIn() && isValidJoinCode(clubId);
+
+      // Create a new club with caller as sole owner and sole initial member
+      allow create: if isSignedIn() &&
+                       isValidJoinCode(clubId) &&
+                       isValidClub(incoming(), clubId) &&
+                       incoming().ownerId == request.auth.uid &&
+                       incoming().memberUids.size() == 1 &&
+                       incoming().memberUids[0] == request.auth.uid &&
+                       incoming().memberStats.keys().hasOnly([request.auth.uid]) &&
+                       isValidMemberEntry(incoming().memberStats[request.auth.uid]);
+
+      // Action-based update patterns
+      allow update: if isSignedIn() &&
+                       isValidJoinCode(clubId) &&
+                       isValidClub(incoming(), clubId) &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().joinCode == existing().joinCode &&
+                       incoming().createdAt == existing().createdAt && (
+                         // Action 1: Join club with valid stats entry for caller only
+                         (
+                           !(request.auth.uid in existing().memberUids) &&
+                           (request.auth.uid in incoming().memberUids) &&
+                           incoming().memberUids.size() == existing().memberUids.size() + 1 &&
+                           incoming().memberUids.hasAll(existing().memberUids) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberStats', 'updatedAt']) &&
+                           incoming().memberStats.diff(existing().memberStats).affectedKeys().hasOnly([request.auth.uid]) &&
+                           isValidMemberEntry(incoming().memberStats[request.auth.uid])
+                         ) ||
+                         // Action 2: Member updates only their own leaderboard stats
+                         (
+                           (request.auth.uid in existing().memberUids) &&
+                           incoming().memberUids == existing().memberUids &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberStats', 'updatedAt']) &&
+                           incoming().memberStats.diff(existing().memberStats).affectedKeys().hasOnly([request.auth.uid]) &&
+                           isValidMemberEntry(incoming().memberStats[request.auth.uid])
+                         ) ||
+                         // Action 3: Non-owner member leaves club and removes only their own stats entry
+                         (
+                           (request.auth.uid in existing().memberUids) &&
+                           request.auth.uid != existing().ownerId &&
+                           !(request.auth.uid in incoming().memberUids) &&
+                           existing().memberUids.hasAll(incoming().memberUids) &&
+                           incoming().memberUids.size() == existing().memberUids.size() - 1 &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberStats', 'updatedAt']) &&
+                           incoming().memberStats.diff(existing().memberStats).affectedKeys().hasOnly([request.auth.uid]) &&
+                           !(request.auth.uid in incoming().memberStats)
+                         ) ||
+                         // Action 4: Owner renames club
+                         (
+                           request.auth.uid == existing().ownerId &&
+                           incoming().memberUids == existing().memberUids &&
+                           incoming().memberStats == existing().memberStats &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt'])
+                         )
+                       );
+
+      allow delete: if isSignedIn() && isValidJoinCode(clubId) && existing().ownerId == request.auth.uid;
+    }
+  }
+}

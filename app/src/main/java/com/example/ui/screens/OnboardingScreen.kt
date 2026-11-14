@@ -161,7 +161,7 @@ fun OnboardingScreen(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "PUSHUP PRO",
+                        text = "PUSHUP CLUB",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Black,
                         color = TextWhite,
@@ -198,7 +198,7 @@ fun OnboardingScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Track reps, follow a plan, and see weekly progress. You can change any of this later.",
+                        text = "Track reps, follow a plan, and see weekly progress. Place your phone face-up under your chest for hands-free counting or tap to count.",
                         fontSize = 13.sp,
                         color = TextGray,
                         lineHeight = 18.sp

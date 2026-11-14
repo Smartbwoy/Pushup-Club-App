@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "PushUp Pro"
+rootProject.name = "Pushup Club"
 
 include(":app")

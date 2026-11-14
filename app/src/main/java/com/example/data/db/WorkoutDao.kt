@@ -18,8 +18,14 @@ interface WorkoutDao {
     @Query("SELECT * FROM workout_sessions ORDER BY timestamp DESC")
     fun getAllSessions(): Flow<List<WorkoutSession>>
 
+    @Query("SELECT * FROM workout_sessions ORDER BY timestamp DESC")
+    suspend fun getAllSessionsSync(): List<WorkoutSession>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: WorkoutSession)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSessions(sessions: List<WorkoutSession>)
 
     @Delete
     suspend fun deleteSession(session: WorkoutSession)

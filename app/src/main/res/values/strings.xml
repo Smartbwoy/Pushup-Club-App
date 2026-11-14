@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">PushUp Pro</string>
+    <string name="app_name">Pushup Club</string>
+    <string name="widget_description">View today\'s push-ups, streak, and start a session in one tap.</string>
 </resources>
