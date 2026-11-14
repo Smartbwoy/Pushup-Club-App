@@ -16,5 +16,5 @@ val FireOrangeLight = Color(0xFFFF9E40)     // Flame highlight
 val AquaBlue = Color(0xFF00E5FF)            // Electric Cyan (weekly goals, secondary badges)
 
 val TextWhite = Color(0xFFF8FAFC)           // Primary crisp text
-val TextGray = Color(0xFF94A3B8)            // Secondary labels & subheaders
-val TextMuted = Color(0xFF64748B)           // Inactive / placeholder text
+val TextGray = Color(0xFFBCC7D8)            // High-contrast secondary labels & subheaders
+val TextMuted = Color(0xFF93A3B8)           // Accessible muted captions & hints

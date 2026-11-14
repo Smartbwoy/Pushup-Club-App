@@ -133,7 +133,7 @@ fun AchievementsScreen(
                     )
                     Text(
                         text = "UNLOCK BADGES & ASCEND ATHLETIC TIERS",
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextGray,
                         letterSpacing = 0.5.sp
@@ -198,7 +198,7 @@ fun AchievementsScreen(
                                 Column {
                                     Text(
                                         text = "CURRENT DIVISION",
-                                        fontSize = 9.sp,
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = TextGray,
                                         letterSpacing = 0.5.sp
@@ -402,7 +402,7 @@ fun ChallengeGoalProgressCard(goal: ChallengeGoal) {
                         ) {
                             Text(
                                 text = "UNLOCKED",
-                                fontSize = 9.sp,
+                                fontSize = 10.sp,
                                 fontWeight = FontWeight.Black,
                                 color = NeonGreen
                             )

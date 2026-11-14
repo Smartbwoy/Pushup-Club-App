@@ -76,6 +76,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.data.backup.BackupManager
+import com.example.data.backup.BackupPayload
 import com.example.data.model.DailyPlan
 import com.example.notifications.ReminderScheduler
 import com.example.ui.WorkoutViewModel
@@ -106,7 +108,7 @@ fun ScheduleScreen(
     val suggestedTrainingTime by viewModel.suggestedTrainingTime.collectAsState()
 
     var weeklyTargetInput by remember { mutableStateOf("") }
-    var voiceCoachEnabled by remember { mutableStateOf(true) }
+    var voiceCoachEnabled by remember { mutableStateOf(false) }
     var notificationsEnabled by remember { mutableStateOf(false) }
     var hasNotificationPermission by remember {
         mutableStateOf(ReminderScheduler.hasNotificationPermission(context))
@@ -117,6 +119,8 @@ fun ScheduleScreen(
     var testNotificationNote by remember { mutableStateOf("") }
     var backupStatusMessage by remember { mutableStateOf("") }
     var backupStatusError by remember { mutableStateOf(false) }
+    var pendingRestoreJson by remember { mutableStateOf<String?>(null) }
+    var pendingRestorePayload by remember { mutableStateOf<BackupPayload?>(null) }
 
     // Synchronize local states cleanly when DB updates
     LaunchedEffect(preferences) {
@@ -193,9 +197,13 @@ fun ScheduleScreen(
                             it.readText()
                         } ?: ""
                     }
-                    viewModel.restoreBackupFromJson(json) { success, message ->
-                        backupStatusError = !success
-                        backupStatusMessage = message
+                    val parsed = BackupManager.parseBackupJson(json)
+                    if (parsed == null) {
+                        backupStatusError = true
+                        backupStatusMessage = "Invalid backup file format."
+                    } else {
+                        pendingRestoreJson = json
+                        pendingRestorePayload = parsed
                     }
                 } catch (e: Exception) {
                     backupStatusError = true
@@ -228,15 +236,15 @@ fun ScheduleScreen(
             ) {
                 Column {
                     Text(
-                        text = "WEEKLY SCHEDULE",
+                        text = "PLAN & SETTINGS",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Black,
                         color = TextWhite,
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "CONFIGURE TARGET REPETITIONS & REMINDERS",
-                        fontSize = 10.sp,
+                        text = "CONFIGURE SCHEDULE, REMINDERS & BACKUPS",
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextGray,
                         letterSpacing = 0.5.sp
@@ -283,7 +291,7 @@ fun ScheduleScreen(
                             Column {
                                 Text(
                                     text = "PLANNED VOLUME",
-                                    fontSize = 10.sp,
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = TextGray,
                                     letterSpacing = 0.5.sp
@@ -804,6 +812,65 @@ fun ScheduleScreen(
             AppInfoPrivacyDialog(
                 milestones = milestones,
                 onDismiss = { showInfoPrivacyDialog = false }
+            )
+        }
+
+        val restorePayload = pendingRestorePayload
+        val restoreJson = pendingRestoreJson
+        if (restorePayload != null && restoreJson != null) {
+            AlertDialog(
+                onDismissRequest = {
+                    pendingRestorePayload = null
+                    pendingRestoreJson = null
+                },
+                title = {
+                    Text(
+                        text = "Restore Backup?",
+                        fontWeight = FontWeight.Bold,
+                        color = TextWhite
+                    )
+                },
+                text = {
+                    Text(
+                        text = "This will replace your current workout history with ${restorePayload.sessions.size} backed-up sessions and your saved schedule. A safety snapshot of your current history will be saved automatically on this device before restoring.",
+                        color = TextGray,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val jsonToRestore = restoreJson
+                            pendingRestorePayload = null
+                            pendingRestoreJson = null
+                            viewModel.restoreBackupFromJson(jsonToRestore) { success, message ->
+                                backupStatusError = !success
+                                backupStatusMessage = message
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen),
+                        modifier = Modifier.testTag("confirm_restore_backup_button")
+                    ) {
+                        Text(
+                            text = "Restore (${restorePayload.sessions.size})",
+                            color = Color(0xFF003818),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            pendingRestorePayload = null
+                            pendingRestoreJson = null
+                        }
+                    ) {
+                        Text("Cancel", color = TextWhite)
+                    }
+                },
+                containerColor = CardSurfaceElevated,
+                shape = RoundedCornerShape(16.dp)
             )
         }
 

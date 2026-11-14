@@ -104,6 +104,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.adaptive.AdaptiveProgramManager
 import com.example.data.model.TrainingProgram
+import com.example.data.model.UserPreferences
 import com.example.data.repository.WorkoutRepository
 import com.example.ui.WorkoutViewModel
 import com.example.ui.components.CameraRepCounterView
@@ -144,6 +145,20 @@ fun WorkoutScreen(
 
     var showManualDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
+    var homeCameraHint by remember { mutableStateOf<String?>(null) }
+
+    val homeContext = LocalContext.current
+    val homeCameraPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            homeCameraHint = null
+            viewModel.updatePreferredCounterMode(UserPreferences.COUNTER_MODE_CAMERA)
+        } else {
+            homeCameraHint = "Camera permission needed for optical mode — using Tap Mode."
+            viewModel.updatePreferredCounterMode(UserPreferences.COUNTER_MODE_TAP)
+        }
+    }
 
     val preferredLevel = preferences?.experienceLevel ?: "Beginner"
     val adaptedPrograms = remember(preferredLevel, adaptiveMultipliers) {
@@ -194,10 +209,10 @@ fun WorkoutScreen(
                         }
                         Text(
                             text = "PROGRESSIVE OVERLOAD & TRACKING",
-                            fontSize = 10.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextGray,
-                            letterSpacing = 1.sp
+                            letterSpacing = 0.8.sp
                         )
                     }
 
@@ -421,6 +436,107 @@ fun WorkoutScreen(
                 }
             }
 
+            // Pre-workout Counting Mode selector
+            item {
+                val activeMode = preferences?.preferredCounterMode ?: UserPreferences.COUNTER_MODE_TAP
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = CardSurface),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(0.06f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "REP COUNTING MODE",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                color = TextGray,
+                                letterSpacing = 0.6.sp
+                            )
+                            Text(
+                                text = when (activeMode) {
+                                    UserPreferences.COUNTER_MODE_PROXIMITY -> "Proximity Ready"
+                                    UserPreferences.COUNTER_MODE_CAMERA -> "Front Camera"
+                                    else -> "Tap Mode"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AquaBlue
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            HomeCounterModePill(
+                                label = "Tap",
+                                icon = Icons.Default.TouchApp,
+                                selected = activeMode == UserPreferences.COUNTER_MODE_TAP,
+                                enabled = true,
+                                accent = NeonGreen,
+                                modifier = Modifier.weight(1f).testTag("home_mode_tap"),
+                                onClick = {
+                                    homeCameraHint = null
+                                    viewModel.updatePreferredCounterMode(UserPreferences.COUNTER_MODE_TAP)
+                                }
+                            )
+                            HomeCounterModePill(
+                                label = if (viewModel.hasProximitySensor) "Sensor" else "No Sensor",
+                                icon = Icons.Default.Sensors,
+                                selected = activeMode == UserPreferences.COUNTER_MODE_PROXIMITY,
+                                enabled = viewModel.hasProximitySensor,
+                                accent = NeonGreen,
+                                modifier = Modifier.weight(1f).testTag("home_mode_proximity"),
+                                onClick = {
+                                    homeCameraHint = null
+                                    viewModel.updatePreferredCounterMode(UserPreferences.COUNTER_MODE_PROXIMITY)
+                                }
+                            )
+                            HomeCounterModePill(
+                                label = "Camera",
+                                icon = Icons.Default.CameraAlt,
+                                selected = activeMode == UserPreferences.COUNTER_MODE_CAMERA,
+                                enabled = true,
+                                accent = AquaBlue,
+                                modifier = Modifier.weight(1f).testTag("home_mode_camera"),
+                                onClick = {
+                                    val hasCam = ContextCompat.checkSelfPermission(
+                                        homeContext,
+                                        Manifest.permission.CAMERA
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (hasCam) {
+                                        homeCameraHint = null
+                                        viewModel.updatePreferredCounterMode(UserPreferences.COUNTER_MODE_CAMERA)
+                                    } else {
+                                        homeCameraPermLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            )
+                        }
+
+                        if (!homeCameraHint.isNullOrBlank()) {
+                            Text(
+                                text = homeCameraHint.orEmpty(),
+                                fontSize = 11.sp,
+                                color = FireOrange,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+
             // Form Pro Tip Card
             item {
                 Card(
@@ -591,15 +707,76 @@ fun StatMetricCard(
             )
             Text(
                 text = title,
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextGray,
                 letterSpacing = 0.5.sp
             )
             Text(
                 text = unit,
-                fontSize = 9.sp,
-                color = TextMuted
+                fontSize = 11.sp,
+                color = TextGray
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeCounterModePill(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    enabled: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .height(48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        color = when {
+            !enabled -> DarkSurface.copy(alpha = 0.45f)
+            selected -> accent.copy(0.18f)
+            else -> DarkSurface
+        },
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = when {
+                !enabled -> Color.White.copy(0.04f)
+                selected -> accent
+                else -> Color.White.copy(0.08f)
+            }
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = when {
+                    !enabled -> TextMuted.copy(0.5f)
+                    selected -> accent
+                    else -> TextGray
+                },
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                fontWeight = if (selected) FontWeight.Black else FontWeight.SemiBold,
+                color = when {
+                    !enabled -> TextMuted.copy(0.5f)
+                    selected -> TextWhite
+                    else -> TextGray
+                },
+                maxLines = 1
             )
         }
     }
@@ -926,9 +1103,13 @@ fun WorkoutSessionOverlay(
         }
     }
 
-    // Intercept Back button during workout to prevent losing progress
+    // Intercept Back button during active sets, but close cleanly when already FINISHED to prevent double-save
     BackHandler(enabled = true) {
-        showExitDialog = true
+        if (workoutState == "FINISHED") {
+            viewModel.cancelWorkout()
+        } else {
+            showExitDialog = true
+        }
     }
 
     // Pulse animation
@@ -971,7 +1152,11 @@ fun WorkoutSessionOverlay(
                         color = NeonGreen
                     )
                     Text(
-                        text = if (workoutState == "REST") "REST INTERVAL ACTIVE" else "SET ${currentSetIndex + 1} OF ${activeSets.size}",
+                        text = when (workoutState) {
+                            "REST" -> "REST INTERVAL ACTIVE"
+                            "FINISHED" -> "SESSION COMPLETE"
+                            else -> "SET ${currentSetIndex + 1} OF ${activeSets.size}"
+                        },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TextGray
@@ -979,14 +1164,20 @@ fun WorkoutSessionOverlay(
                 }
 
                 IconButton(
-                    onClick = { showExitDialog = true },
+                    onClick = {
+                        if (workoutState == "FINISHED") {
+                            viewModel.cancelWorkout()
+                        } else {
+                            showExitDialog = true
+                        }
+                    },
                     modifier = Modifier
                         .background(CardSurfaceElevated, CircleShape)
-                        .size(40.dp)
+                        .size(48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Abort Workout",
+                        contentDescription = if (workoutState == "FINISHED") "Close Summary" else "Exit Workout",
                         tint = FireOrange,
                         modifier = Modifier.size(20.dp)
                     )
@@ -1323,25 +1514,27 @@ fun WorkoutSessionOverlay(
                                 Text(
                                     text = cameraFeedbackMsg.orEmpty(),
                                     color = FireOrange,
-                                    fontSize = 10.sp,
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
                                 )
                             }
                         }
                     }
-
-                    if (cameraCounting && workoutState == "RUNNING") {
-                        CameraRepCounterView(
-                            isActive = true,
-                            onRepDetected = { viewModel.incrementRep() },
-                            onCameraError = { err ->
-                                viewModel.toggleCameraCounting(false)
-                                cameraFeedbackMsg = err
-                            }
-                        )
-                    }
                 }
+            }
+
+            // Keep front-camera analyzer bound across REST so baseline lighting & AE lock are preserved between sets
+            if (cameraCounting && (workoutState == "RUNNING" || workoutState == "REST")) {
+                CameraRepCounterView(
+                    isActive = true,
+                    isPaused = (workoutState != "RUNNING"),
+                    onRepDetected = { viewModel.incrementRep() },
+                    onCameraError = { err ->
+                        viewModel.toggleCameraCounting(false)
+                        cameraFeedbackMsg = err
+                    }
+                )
             }
 
             // Actions panel based on State
@@ -1530,8 +1723,8 @@ fun WorkoutSessionOverlay(
         )
     }
 
-    // Exit confirmation dialog to prevent accidental loss
-    if (showExitDialog) {
+    // Exit confirmation dialog to prevent accidental loss (only while active)
+    if (showExitDialog && workoutState != "FINISHED") {
         AlertDialog(
             onDismissRequest = { showExitDialog = false },
             title = {

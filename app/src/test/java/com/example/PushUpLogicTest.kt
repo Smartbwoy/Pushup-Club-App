@@ -227,10 +227,16 @@ class PushUpLogicTest {
         val detector = com.example.camera.OpticalRepDetector(cooldownMs = 550L, calibrationFramesRequired = 8)
         var t = 1000L
 
-        // 8 bright ambient calibration frames (~180 luma)
-        repeat(8) {
+        // 8 bright ambient calibration frames (~180 luma); frames 1..7 are calibrating and frame 8 completes calibration
+        repeat(8) { idx ->
             val res = detector.processFrameLuminance(180f, t)
-            assertTrue(res.isCalibrating)
+            if (idx < 7) {
+                assertTrue(res.isCalibrating)
+                assertEquals(false, res.calibrationJustCompleted)
+            } else {
+                assertEquals(false, res.isCalibrating)
+                assertTrue(res.calibrationJustCompleted)
+            }
             assertEquals(false, res.repDetected)
             t += 50L
         }
@@ -291,5 +297,37 @@ class PushUpLogicTest {
         assertEquals(listOf("Bob", "Cara", "Alice"), rows.map { it.displayName })
         assertEquals(true, rows[1].isCurrentUser)
         assertEquals(true, rows[2].isOwner)
+    }
+
+    @Test
+    fun `optical rep detector supports setup countdown and flags too dark lighting`() {
+        val detector = com.example.camera.OpticalRepDetector(
+            cooldownMs = 550L,
+            calibrationFramesRequired = 4,
+            warmupMs = 2000L,
+            lowLightThreshold = 28f
+        )
+
+        // Warmup frames at 0ms and 1100ms return countdown seconds without calibrating yet
+        val warm1 = detector.processFrameLuminance(160f, 0L)
+        assertTrue(warm1.isWarmingUp)
+        assertEquals(2, warm1.countdownSecondsLeft)
+        assertEquals(false, warm1.repDetected)
+
+        val warm2 = detector.processFrameLuminance(160f, 1100L)
+        assertTrue(warm2.isWarmingUp)
+        assertEquals(1, warm2.countdownSecondsLeft)
+
+        // Warmup completes at 2000ms -> 4 calibration frames finish at 4th frame
+        repeat(3) { idx ->
+            val cal = detector.processFrameLuminance(18f, 2000L + idx * 50L)
+            assertEquals(false, cal.isWarmingUp)
+            assertTrue(cal.isCalibrating)
+            assertEquals(false, cal.calibrationJustCompleted)
+        }
+        val calDone = detector.processFrameLuminance(18f, 2200L)
+        assertEquals(false, calDone.isCalibrating)
+        assertTrue(calDone.calibrationJustCompleted)
+        assertTrue(calDone.isTooDark)
     }
 }

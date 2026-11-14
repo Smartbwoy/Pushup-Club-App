@@ -1,5 +1,11 @@
 package com.example.ui.components
 
+import android.hardware.camera2.CaptureRequest
+import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -18,9 +24,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -47,6 +58,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.camera.OpticalRepDetector
 import com.example.ui.theme.AquaBlue
 import com.example.ui.theme.CardSurface
+import com.example.ui.theme.CardSurfaceElevated
 import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.FireOrange
 import com.example.ui.theme.NeonGreen
@@ -57,6 +69,7 @@ import java.util.concurrent.Executors
 @Composable
 fun CameraRepCounterView(
     isActive: Boolean,
+    isPaused: Boolean = false,
     onRepDetected: () -> Unit,
     onCameraError: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -65,11 +78,16 @@ fun CameraRepCounterView(
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnRepDetected by rememberUpdatedState(onRepDetected)
     val currentOnCameraError by rememberUpdatedState(onCameraError)
+    val currentIsPaused by rememberUpdatedState(isPaused)
 
-    val detector = remember { OpticalRepDetector() }
+    val detector = remember { OpticalRepDetector(cooldownMs = 550L, calibrationFramesRequired = 8, warmupMs = 2000L) }
+    var isWarmingUp by remember { mutableStateOf(true) }
+    var countdownSeconds by remember { mutableIntStateOf(2) }
     var isCalibrating by remember { mutableStateOf(true) }
     var isDownPosition by remember { mutableStateOf(false) }
+    var isTooDark by remember { mutableStateOf(false) }
     var depthProgress by remember { mutableFloatStateOf(0f) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -86,8 +104,11 @@ fun CameraRepCounterView(
 
         if (isActive) {
             detector.reset()
+            isWarmingUp = true
+            countdownSeconds = 2
             isCalibrating = true
             isDownPosition = false
+            isTooDark = false
             depthProgress = 0f
 
             val providerFuture = ProcessCameraProvider.getInstance(context)
@@ -98,14 +119,12 @@ fun CameraRepCounterView(
                         val provider = providerFuture.get()
                         cameraProvider = provider
 
-                        val selector = when {
-                            provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> CameraSelector.DEFAULT_FRONT_CAMERA
-                            provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> CameraSelector.DEFAULT_BACK_CAMERA
-                            else -> {
-                                currentOnCameraError("No usable camera found on this device.")
-                                return@addListener
-                            }
+                        // Strictly require front camera; never fall back silently to rear camera
+                        if (!provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                            currentOnCameraError("No front camera found. Switch to Proximity Sensor or Tap Mode.")
+                            return@addListener
                         }
+                        val selector = CameraSelector.DEFAULT_FRONT_CAMERA
 
                         val preview = Preview.Builder().build().also {
                             it.surfaceProvider = previewView.surfaceProvider
@@ -117,14 +136,30 @@ fun CameraRepCounterView(
 
                         analysis.setAnalyzer(analysisExecutor) { imageProxy ->
                             try {
+                                if (currentIsPaused && detector.isCalibrated()) {
+                                    // Keep baseline & locked exposure intact across rest intervals
+                                    mainExecutor.execute {
+                                        if (!disposed) {
+                                            isDownPosition = false
+                                            depthProgress = 0f
+                                        }
+                                    }
+                                    return@setAnalyzer
+                                }
                                 val luma = OpticalRepDetector.computeCenterRoiLuminance(imageProxy)
                                 val result = detector.processFrameLuminance(luma, System.currentTimeMillis())
+                                if (result.calibrationJustCompleted) {
+                                    setAutoExposureLocked(boundCamera, locked = true)
+                                }
                                 mainExecutor.execute {
                                     if (!disposed) {
+                                        isWarmingUp = result.isWarmingUp
+                                        countdownSeconds = result.countdownSecondsLeft
                                         isCalibrating = result.isCalibrating
                                         isDownPosition = result.isDownPosition
+                                        isTooDark = result.isTooDark
                                         depthProgress = result.depthProgress
-                                        if (result.repDetected) {
+                                        if (result.repDetected && !currentIsPaused) {
                                             currentOnRepDetected()
                                         }
                                     }
@@ -135,11 +170,13 @@ fun CameraRepCounterView(
                         }
 
                         provider.unbindAll()
-                        provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+                        val camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+                        boundCamera = camera
+                        setAutoExposureLocked(camera, locked = false)
                     } catch (e: Exception) {
                         mainExecutor.execute {
                             if (!disposed) {
-                                currentOnCameraError(e.localizedMessage ?: "Unable to start optical camera counter.")
+                                currentOnCameraError(e.localizedMessage ?: "Unable to start front camera counter.")
                             }
                         }
                     }
@@ -150,6 +187,8 @@ fun CameraRepCounterView(
 
         onDispose {
             disposed = true
+            setAutoExposureLocked(boundCamera, locked = false)
+            boundCamera = null
             try {
                 cameraProvider?.unbindAll()
             } catch (_: Exception) {
@@ -167,95 +206,172 @@ fun CameraRepCounterView(
         border = BorderStroke(
             1.5.dp,
             when {
+                isTooDark -> FireOrange.copy(0.75f)
+                isPaused -> AquaBlue.copy(0.4f)
                 isCalibrating -> AquaBlue.copy(0.6f)
                 isDownPosition -> NeonGreen
                 else -> NeonGreen.copy(0.35f)
             }
         )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(74.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(DarkSurface)
-                    .border(
-                        BorderStroke(2.dp, if (isDownPosition) NeonGreen else AquaBlue.copy(0.5f)),
-                        RoundedCornerShape(12.dp)
-                    ),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                AndroidView(
-                    factory = { previewView },
-                    modifier = Modifier.fillMaxSize()
-                )
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
-                        .border(1.5.dp, NeonGreen.copy(0.8f), CircleShape)
-                )
-            }
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(DarkSurface)
+                        .border(
+                            BorderStroke(2.dp, if (isDownPosition) NeonGreen else AquaBlue.copy(0.5f)),
+                            RoundedCornerShape(12.dp)
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
+                    AndroidView(
+                        factory = { previewView },
+                        modifier = Modifier.fillMaxSize()
+                    )
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
-                            .background(
-                                color = when {
-                                    isCalibrating -> AquaBlue
-                                    isDownPosition -> NeonGreen
-                                    else -> FireOrange
-                                },
-                                shape = CircleShape
-                            )
-                    )
-                    Text(
-                        text = when {
-                            isCalibrating -> "CALIBRATING LIGHTING..."
-                            isDownPosition -> "DIP DETECTED (REP LOCKED)"
-                            else -> "OPTICAL COUNTER READY"
-                        },
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
-                        color = if (isDownPosition) NeonGreen else TextWhite
+                            .size(28.dp)
+                            .border(1.5.dp, NeonGreen.copy(0.8f), CircleShape)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(
+                                        color = when {
+                                            isPaused -> AquaBlue
+                                            isCalibrating -> AquaBlue
+                                            isDownPosition -> NeonGreen
+                                            else -> FireOrange
+                                        },
+                                        shape = CircleShape
+                                    )
+                            )
+                            Text(
+                                text = when {
+                                    isPaused -> "PAUSED FOR REST (LOCKED)"
+                                    isWarmingUp -> "GET IN PLANK (${countdownSeconds}s)..."
+                                    isCalibrating -> "LOCKING EXPOSURE..."
+                                    isDownPosition -> "DIP DETECTED (REP LOCKED)"
+                                    else -> "OPTICAL COUNTER READY"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (isDownPosition) NeonGreen else TextWhite
+                            )
+                        }
 
-                Text(
-                    text = if (isCalibrating) {
-                        "Hold plank position briefly so ceiling light baseline locks in."
-                    } else {
-                        "Place phone face-up under your chest. Chest shadow triggers each rep."
-                    },
-                    fontSize = 10.sp,
-                    color = TextGray,
-                    lineHeight = 13.sp
-                )
+                        if (!isWarmingUp && !isCalibrating) {
+                            IconButton(
+                                onClick = {
+                                    setAutoExposureLocked(boundCamera, locked = false)
+                                    detector.reset()
+                                    isWarmingUp = true
+                                    countdownSeconds = 2
+                                    isCalibrating = true
+                                    isDownPosition = false
+                                    depthProgress = 0f
+                                },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .background(CardSurfaceElevated, CircleShape)
+                                    .testTag("camera_recalibrate_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Recalibrate camera lighting",
+                                    tint = AquaBlue,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
 
-                LinearProgressIndicator(
-                    progress = { if (isCalibrating) 0.25f else depthProgress },
+                    Text(
+                        text = when {
+                            isPaused -> "Calibration preserved between sets. Ready as soon as rest ends."
+                            isWarmingUp -> "Set phone face-up under chest and hold top plank position."
+                            isCalibrating -> "Capturing ceiling brightness and locking exposure..."
+                            else -> "Exposure locked. Lower chest over phone to trigger each rep."
+                        },
+                        fontSize = 11.sp,
+                        color = TextGray,
+                        lineHeight = 14.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    LinearProgressIndicator(
+                        progress = { if (isCalibrating) 0.25f else depthProgress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = if (isDownPosition) NeonGreen else AquaBlue,
+                        trackColor = Color.White.copy(0.12f)
+                    )
+                }
+            }
+
+            if (isTooDark) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = if (isDownPosition) NeonGreen else AquaBlue,
-                    trackColor = Color.White.copy(0.12f)
-                )
+                        .background(FireOrange.copy(0.15f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = FireOrange,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Too dark for camera detection — turn on a room light or switch to Tap/Sensor.",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FireOrange,
+                        lineHeight = 14.sp
+                    )
+                }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalCamera2Interop::class)
+private fun setAutoExposureLocked(camera: Camera?, locked: Boolean) {
+    camera ?: return
+    try {
+        val camera2Control = Camera2CameraControl.from(camera.cameraControl)
+        val options = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, locked)
+            .build()
+        camera2Control.setCaptureRequestOptions(options)
+    } catch (_: Exception) {
     }
 }

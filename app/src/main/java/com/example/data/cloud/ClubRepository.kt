@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.R
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
@@ -101,6 +102,10 @@ class ClubRepository(
         }
     }
 
+    /**
+     * Atomically joins a club using a Firestore transaction so concurrent joins from multiple
+     * members never overwrite each other's memberUids or trip security rule size checks.
+     */
     suspend fun joinClub(
         rawJoinCode: String,
         stats: ClubMemberStats
@@ -116,52 +121,61 @@ class ClubRepository(
         }
 
         val docRef = db.collection(COLLECTION_CLUBS).document(code)
+        val statsMap = stats.toPayloadMap()
         return try {
-            val snap = docRef.get().await()
-            if (!snap.exists()) {
-                return Result.failure(IllegalArgumentException("No club found for code $code."))
-            }
-            val club = snap.toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                ?: return Result.failure(IllegalStateException("Unable to read club $code."))
+            val joined = db.runTransaction { transaction ->
+                val snap = transaction.get(docRef)
+                if (!snap.exists()) {
+                    throw IllegalArgumentException("No club found for code $code.")
+                }
+                val club = snap.toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    ?: throw IllegalStateException("Unable to read club $code.")
 
-            val statsMap = stats.toPayloadMap()
-            if (uid in club.memberUids) {
-                docRef.update(
-                    mapOf(
-                        "memberStats.$uid" to statsMap,
-                        "updatedAt" to FieldValue.serverTimestamp()
+                if (uid in club.memberUids) {
+                    transaction.update(
+                        docRef,
+                        mapOf(
+                            "memberStats.$uid" to statsMap,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
                     )
-                ).await()
-                val updated = docRef.get().await()
-                    .toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                    ?: club
-                return Result.success(updated)
-            }
-
-            if (club.memberUids.size >= 50) {
-                return Result.failure(IllegalStateException("This club already has the maximum 50 members."))
-            }
-
-            val updatedMembers = club.memberUids + uid
-            docRef.update(
-                mapOf(
-                    "memberUids" to updatedMembers,
-                    "memberStats.$uid" to statsMap,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
-            val joined = docRef.get().await()
-                .toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                ?: club.copy(memberUids = updatedMembers)
+                    club.copy(
+                        memberStats = club.memberStats + (uid to stats)
+                    )
+                } else {
+                    if (club.memberUids.size >= 50) {
+                        throw IllegalStateException("This club already has the maximum 50 members.")
+                    }
+                    val updatedMembers = club.memberUids + uid
+                    transaction.update(
+                        docRef,
+                        mapOf(
+                            "memberUids" to updatedMembers,
+                            "memberStats.$uid" to statsMap,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                    club.copy(
+                        memberUids = updatedMembers,
+                        memberStats = club.memberStats + (uid to stats)
+                    )
+                }
+            }.await()
             Result.success(joined)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            if (e !is IllegalArgumentException && e !is IllegalStateException) {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            }
             Result.failure(e)
         }
     }
 
+    /**
+     * Syncs the user's leaderboard metrics across all joined clubs.
+     * Legacy /users/{uid} documents are only updated if already present so no redundant profile docs are created.
+     */
     suspend fun syncStatsToUserAndClubs(stats: ClubMemberStats): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -169,23 +183,7 @@ class ClubRepository(
             return Result.failure(e)
         }
         val cleanStats = stats.toPayloadMap()
-        val userDocRef = db.collection(COLLECTION_USERS).document(uid)
         return try {
-            val existingProfile = userDocRef.get().await()
-            if (!existingProfile.exists()) {
-                val createPayload = cleanStats.toMutableMap().apply {
-                    put("userId", uid)
-                    put("createdAt", FieldValue.serverTimestamp())
-                    put("updatedAt", FieldValue.serverTimestamp())
-                }
-                userDocRef.set(createPayload).await()
-            } else {
-                val updatePayload = cleanStats.toMutableMap().apply {
-                    put("updatedAt", FieldValue.serverTimestamp())
-                }
-                userDocRef.update(updatePayload as Map<String, Any>).await()
-            }
-
             val joinedClubs = db.collection(COLLECTION_CLUBS)
                 .whereArrayContains("memberUids", uid)
                 .get()
@@ -203,11 +201,16 @@ class ClubRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, userDocRef.path)
+            handleFirestoreError(e, OperationType.WRITE, "$COLLECTION_CLUBS/$uid")
             Result.failure(e)
         }
     }
 
+    /**
+     * Transactionally removes the caller from a club. If the caller is the owner:
+     * - transfers ownership to another member when others remain, OR
+     * - deletes the club if the caller is the sole remaining member.
+     */
     suspend fun leaveClub(clubId: String): Result<Unit> {
         val uid = try {
             requireUserId()
@@ -216,29 +219,51 @@ class ClubRepository(
         }
         val docRef = db.collection(COLLECTION_CLUBS).document(clubId)
         return try {
-            val snap = docRef.get().await()
-            val club = snap.toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                ?: return Result.failure(IllegalArgumentException("Club not found."))
-            if (club.ownerId == uid) {
-                return Result.failure(IllegalStateException("Club creators cannot leave—delete the club instead."))
-            }
-            val remainingUids = club.memberUids.filter { it != uid }
-            val remainingStats = club.memberStats
-                .filterKeys { it != uid }
-                .mapValues { (_, v) -> v.toPayloadMap() }
+            db.runTransaction { transaction ->
+                val snap = transaction.get(docRef)
+                val club = snap.toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    ?: throw IllegalArgumentException("Club not found.")
 
-            docRef.update(
-                mapOf(
-                    "memberUids" to remainingUids,
-                    "memberStats" to remainingStats,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+                val remainingUids = club.memberUids.filter { it != uid }
+                if (club.ownerId == uid) {
+                    if (remainingUids.isEmpty()) {
+                        transaction.delete(docRef)
+                    } else {
+                        val nextOwnerId = remainingUids.first()
+                        val remainingStats = club.memberStats
+                            .filterKeys { it != uid }
+                            .mapValues { (_, v) -> v.toPayloadMap() }
+                        transaction.update(
+                            docRef,
+                            mapOf(
+                                "ownerId" to nextOwnerId,
+                                "memberUids" to remainingUids,
+                                "memberStats" to remainingStats,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        )
+                    }
+                } else {
+                    val remainingStats = club.memberStats
+                        .filterKeys { it != uid }
+                        .mapValues { (_, v) -> v.toPayloadMap() }
+                    transaction.update(
+                        docRef,
+                        mapOf(
+                            "memberUids" to remainingUids,
+                            "memberStats" to remainingStats,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+            }.await()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            if (e !is IllegalArgumentException) {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            }
             Result.failure(e)
         }
     }
@@ -257,6 +282,46 @@ class ClubRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.DELETE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Deletes all cloud data owned by or referencing the signed-in user (leaves/transfers/deletes
+     * all clubs, removes any /users/{uid} document, and deletes the Firebase Auth account).
+     * Local workout history on-device remains intact.
+     */
+    suspend fun deleteCloudAccountAndClubData(): Result<Unit> {
+        val currentUser = auth.currentUser
+            ?: return Result.failure(IllegalStateException("Sign in first to delete your cloud club account."))
+        val uid = currentUser.uid
+
+        return try {
+            val joinedClubs = db.collection(COLLECTION_CLUBS)
+                .whereArrayContains("memberUids", uid)
+                .get()
+                .await()
+
+            for (clubDoc in joinedClubs.documents) {
+                leaveClub(clubDoc.id).getOrThrow()
+            }
+
+            // Clean up any legacy private user doc if one exists
+            db.collection(COLLECTION_USERS).document(uid).delete().await()
+
+            // Permanently remove Firebase Authentication identity
+            currentUser.delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseAuthRecentLoginRequiredException) {
+            Result.failure(
+                IllegalStateException(
+                    "For security, please Sign Out and Sign In with Google once, then tap Delete Account again."
+                )
+            )
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, "$COLLECTION_USERS/$uid")
             Result.failure(e)
         }
     }

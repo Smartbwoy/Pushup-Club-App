@@ -15,9 +15,9 @@ Pushup Club makes it easy to start your first workout in seconds and stay consis
 - **Hands-Free Proximity & Front-Camera Counting:** Count reps automatically using your phone's calibrated proximity sensor OR switch on optional Front-Camera Optical Mode when your phone lacks a reliable proximity sensor—plus quick tap and `+1/-1` controls.
 - **30-Day Push-Up Challenge:** Start with a baseline max-rep test and follow a dynamic 30-day schedule with recovery days and a Day 30 final retest.
 - **Adaptive Training Programs:** Sessions adapt by `+10%` or `-10%` automatically based on your previous completion so beginners stay motivated and athletes keep progressing.
-- **Real Clubs & Invite Codes (Optional):** Sign in with Google only if you want social leaderboards—create a Pushup Club, share a 6-character code with friends, and track weekly reps and streaks together.
+- **Real Clubs & Invite Links (Optional):** Sign in with Google only if you want social leaderboards—choose an anonymous or custom club nickname, share a 6-character code or invite link with friends, and track weekly reps and streaks together.
 - **Weekly Goal Ring & Rest-Day Streaks:** Compare your last 7 days against your weekly target without breaking your streak on planned rest days.
-- **Smart Reminders, Widget & Backups:** Schedule daily reminders that detect your usual workout hour, jump straight in from the home-screen widget, and export/restore JSON backups anytime.
+- **Smart Reminders, Widget & Safe Backups:** Schedule daily reminders that skip nagging after you already trained, jump straight in from the home-screen widget, and export/restore JSON backups anytime.
 
 Support: elevizion876@gmail.com
 

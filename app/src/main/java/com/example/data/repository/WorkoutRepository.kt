@@ -35,10 +35,11 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
                 workoutDao.insertUserPreferences(
                     UserPreferences(
                         weeklyTarget = 100,
-                        voiceCoachEnabled = true,
+                        voiceCoachEnabled = false,
                         notificationsEnabled = false,
                         hasCompletedOnboarding = false,
-                        experienceLevel = "Beginner"
+                        experienceLevel = "Beginner",
+                        preferredCounterMode = UserPreferences.COUNTER_MODE_TAP
                     )
                 )
 
@@ -141,7 +142,10 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
     suspend fun applyOnboardingSetup(
         experienceLevel: String,
         weeklyTarget: Int,
-        enabledDays: Set<Int>
+        enabledDays: Set<Int>,
+        voiceCoachEnabled: Boolean = false,
+        notificationsEnabled: Boolean = false,
+        preferredCounterMode: String = UserPreferences.COUNTER_MODE_TAP
     ) {
         ensureInitialized()
         val current = workoutDao.getUserPreferences() ?: UserPreferences()
@@ -149,6 +153,9 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
             current.copy(
                 weeklyTarget = weeklyTarget.coerceAtLeast(10),
                 experienceLevel = experienceLevel,
+                voiceCoachEnabled = voiceCoachEnabled,
+                notificationsEnabled = notificationsEnabled,
+                preferredCounterMode = preferredCounterMode,
                 hasCompletedOnboarding = true
             )
         )

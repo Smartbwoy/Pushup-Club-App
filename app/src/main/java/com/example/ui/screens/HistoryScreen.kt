@@ -131,7 +131,7 @@ fun HistoryScreen(
                     )
                     Text(
                         text = "ANALYZE VOLUME & TRACK PROGRESSION",
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextGray,
                         letterSpacing = 0.5.sp
@@ -186,22 +186,22 @@ fun HistoryScreen(
                                 horizontalArrangement = Arrangement.SpaceAround
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("LIFETIME REPS", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TextGray)
+                                    Text("LIFETIME REPS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextGray)
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text("$totalPushups", fontSize = 20.sp, fontWeight = FontWeight.Black, color = NeonGreen)
                                 }
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("AVG / SESSION", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TextGray)
+                                    Text("AVG / SESSION", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextGray)
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text("$avgRepsPerSession", fontSize = 20.sp, fontWeight = FontWeight.Black, color = AquaBlue)
                                 }
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("BEST SESSION", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TextGray)
+                                    Text("BEST SESSION", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextGray)
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text("$bestRecord", fontSize = 20.sp, fontWeight = FontWeight.Black, color = FireOrange)
                                 }
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("SETS LOGGED", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TextGray)
+                                    Text("SETS LOGGED", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextGray)
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text("$totalSetsCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = TextWhite)
                                 }
@@ -468,7 +468,7 @@ fun WorkoutChart(
                 ) {
                     Text(
                         text = label.uppercase(),
-                        fontSize = 9.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextGray
                     )
@@ -536,7 +536,7 @@ fun HistoryLogCard(
                             ) {
                                 Text(
                                     text = "PROGRAM",
-                                    fontSize = 8.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.Black,
                                     color = AquaBlue
                                 )

@@ -1,4 +1,35 @@
 <resources>
     <string name="app_name">Pushup Club</string>
     <string name="widget_description">View today\'s push-ups, streak, and start a session in one tap.</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_workouts">Workouts</string>
+    <string name="nav_history">History</string>
+    <string name="nav_plan_settings">Settings</string>
+    <string name="nav_clubs">Clubs</string>
+    <string name="nav_trophies">Trophies</string>
+
+    <!-- Counting Modes -->
+    <string name="mode_tap">Tap Mode</string>
+    <string name="mode_proximity">Proximity Sensor</string>
+    <string name="mode_camera">Front Camera</string>
+    <string name="mode_tap_desc">Tap the circle or +1 button during sets.</string>
+    <string name="mode_proximity_desc">Place phone face-up under chest; calibrates down-and-up motion.</string>
+    <string name="mode_camera_desc">Front camera tracks chest-shadow dips on device without proximity hardware.</string>
+
+    <!-- Onboarding & Permissions -->
+    <string name="onboarding_title">BUILD YOUR PLAN</string>
+    <string name="onboarding_skip_start">Skip &amp; Start</string>
+    <string name="onboarding_voice_label">Voice Coach Audio</string>
+    <string name="onboarding_voice_desc">Optional spoken rep &amp; rest cues (off by default).</string>
+    <string name="onboarding_notif_label">Daily Training Reminders</string>
+    <string name="onboarding_notif_reason">Alerts only on your chosen training days—automatically skipped if you already trained today.</string>
+
+    <!-- Privacy, Support & Store Links -->
+    <string name="support_email">elevizion876@gmail.com</string>
+    <string name="privacy_policy_url">https://github.com/elevizion/Pushup-Club-App/blob/main/PRIVACY_POLICY.md</string>
+    <string name="play_store_url">https://play.google.com/store/apps/details?id=com.aistudio.pushuptracker.fylsqb</string>
+    <string name="privacy_summary_offline">Solo workouts, goals, schedules, and milestones stay locally on your device in Room (excluded from cloud Auto Backup unless you export a JSON backup).</string>
+    <string name="privacy_summary_camera">Optional Front-Camera Optical Mode analyzes frame luminance in memory on-device only. No photos or video frames are ever saved or uploaded.</string>
+    <string name="privacy_summary_clubs">Optional Clubs use Google Sign-In and Cloud Firestore to sync your chosen nickname, club memberships, and aggregate push-up totals.</string>
 </resources>

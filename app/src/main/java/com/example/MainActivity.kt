@@ -6,7 +6,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
@@ -14,16 +13,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
-import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,10 +32,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.cloud.ClubNicknameStore
 import com.example.ui.WorkoutViewModel
 import com.example.ui.screens.AchievementsScreen
 import com.example.ui.screens.ClubsScreen
@@ -51,14 +53,12 @@ import com.example.widget.WorkoutWidgetProvider
 
 class MainActivity : ComponentActivity() {
     private val widgetStartTrigger = mutableStateOf(false)
+    private val pendingJoinCodeTrigger = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (intent?.getBooleanExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT, false) == true) {
-            widgetStartTrigger.value = true
-            intent.removeExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT)
-        }
+        consumeLaunchIntent(intent)
         setContent {
             MyApplicationTheme {
                 val viewModel: WorkoutViewModel = viewModel()
@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
                 val workoutState by viewModel.workoutState.collectAsState()
                 val preferences by viewModel.preferences.collectAsState()
                 val shouldStartFromWidget by widgetStartTrigger
+                val pendingJoinCode by pendingJoinCodeTrigger
 
                 LaunchedEffect(shouldStartFromWidget) {
                     if (shouldStartFromWidget) {
@@ -75,18 +76,28 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                LaunchedEffect(pendingJoinCode) {
+                    if (!pendingJoinCode.isNullOrBlank()) {
+                        currentTab = 3
+                    }
+                }
+
                 val showOnboarding = preferences != null &&
                     preferences?.hasCompletedOnboarding == false &&
                     workoutState == "IDLE"
 
                 if (showOnboarding) {
                     OnboardingScreen(
-                        onCompleteSetup = { level, weeklyTarget, enabledDays, startImmediately ->
+                        hasProximitySensor = viewModel.hasProximitySensor,
+                        onCompleteSetup = { level, weeklyTarget, enabledDays, startImmediately, counterMode, voiceEnabled, notifEnabled ->
                             viewModel.completeOnboarding(
                                 experienceLevel = level,
                                 weeklyTarget = weeklyTarget,
                                 enabledDays = enabledDays,
-                                startWorkoutImmediately = startImmediately
+                                startWorkoutImmediately = startImmediately,
+                                preferredCounterMode = counterMode,
+                                voiceCoachEnabled = voiceEnabled,
+                                notificationsEnabled = notifEnabled
                             )
                         },
                         onSkipAndStartWorkout = {
@@ -94,7 +105,6 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 } else {
-                    // BackHandler behavior: when not on workouts tab and workout is idle, return to tab 0
                     BackHandler(enabled = currentTab != 0 && workoutState == "IDLE") {
                         currentTab = 0
                     }
@@ -121,11 +131,17 @@ class MainActivity : ComponentActivity() {
                                     icon = {
                                         Icon(
                                             imageVector = Icons.Default.FitnessCenter,
-                                            contentDescription = "Workouts",
+                                            contentDescription = stringResource(R.string.nav_workouts),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     },
-                                    label = { Text("Workouts", fontSize = 11.sp, fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Medium) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(R.string.nav_workouts),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (currentTab == 0) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_workouts_tab")
                                 )
@@ -136,11 +152,17 @@ class MainActivity : ComponentActivity() {
                                     icon = {
                                         Icon(
                                             imageVector = Icons.Default.History,
-                                            contentDescription = "History",
+                                            contentDescription = stringResource(R.string.nav_history),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     },
-                                    label = { Text("History", fontSize = 11.sp, fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Medium) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(R.string.nav_history),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (currentTab == 1) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_history_tab")
                                 )
@@ -150,12 +172,18 @@ class MainActivity : ComponentActivity() {
                                     onClick = { currentTab = 2 },
                                     icon = {
                                         Icon(
-                                            imageVector = Icons.Default.EventNote,
-                                            contentDescription = "Plan",
+                                            imageVector = Icons.Default.Settings,
+                                            contentDescription = stringResource(R.string.nav_plan_settings),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     },
-                                    label = { Text("Plan", fontSize = 11.sp, fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Medium) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(R.string.nav_plan_settings),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (currentTab == 2) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_schedule_tab")
                                 )
@@ -166,11 +194,17 @@ class MainActivity : ComponentActivity() {
                                     icon = {
                                         Icon(
                                             imageVector = Icons.Default.Groups,
-                                            contentDescription = "Clubs",
+                                            contentDescription = stringResource(R.string.nav_clubs),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     },
-                                    label = { Text("Clubs", fontSize = 11.sp, fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Medium) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(R.string.nav_clubs),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (currentTab == 3) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_clubs_tab")
                                 )
@@ -181,11 +215,17 @@ class MainActivity : ComponentActivity() {
                                     icon = {
                                         Icon(
                                             imageVector = Icons.Default.EmojiEvents,
-                                            contentDescription = "Trophies",
+                                            contentDescription = stringResource(R.string.nav_trophies),
                                             modifier = Modifier.size(24.dp)
                                         )
                                     },
-                                    label = { Text("Trophies", fontSize = 11.sp, fontWeight = if (currentTab == 4) FontWeight.Bold else FontWeight.Medium) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(R.string.nav_trophies),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (currentTab == 4) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                    },
                                     colors = navItemColors,
                                     modifier = Modifier.testTag("nav_trophies_tab")
                                 )
@@ -207,6 +247,8 @@ class MainActivity : ComponentActivity() {
                             )
                             3 -> ClubsScreen(
                                 workoutViewModel = viewModel,
+                                pendingJoinCode = pendingJoinCode,
+                                onConsumePendingJoinCode = { pendingJoinCodeTrigger.value = null },
                                 modifier = Modifier.padding(innerPadding)
                             )
                             4 -> AchievementsScreen(
@@ -223,9 +265,20 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        consumeLaunchIntent(intent)
+    }
+
+    private fun consumeLaunchIntent(intent: Intent?) {
+        intent ?: return
         if (intent.getBooleanExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT, false)) {
             widgetStartTrigger.value = true
             intent.removeExtra(WorkoutWidgetProvider.EXTRA_START_WORKOUT)
+        }
+        val uriStr = intent.data?.toString()
+        val inviteCode = ClubNicknameStore.parseInviteCodeFromUrl(uriStr)
+        if (!inviteCode.isNullOrBlank()) {
+            pendingJoinCodeTrigger.value = inviteCode
+            intent.data = null
         }
     }
 }

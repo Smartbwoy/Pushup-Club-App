@@ -21,9 +21,11 @@ class ReminderReceiver : BroadcastReceiver() {
                 val repository = WorkoutRepository(dao)
                 val prefs = repository.getUserPreferencesSync()
                 val plans = repository.getAllDailyPlansSync()
+                val sessions = repository.getAllSessionsSync()
                 val matchingPlan = plans.firstOrNull { it.dayOfWeek == dayOfWeek }
+                val alreadyTrainedToday = WorkoutRepository.calculateTodayPushUps(sessions) > 0
 
-                if (prefs?.notificationsEnabled == true && matchingPlan?.isEnabled == true) {
+                if (prefs?.notificationsEnabled == true && matchingPlan?.isEnabled == true && !alreadyTrainedToday) {
                     ReminderScheduler.showReminderNotification(
                         context = context,
                         dayOfWeek = dayOfWeek,

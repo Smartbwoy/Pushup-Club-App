@@ -1,5 +1,10 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,18 +28,24 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,11 +57,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.example.R
+import com.example.data.model.UserPreferences
+import com.example.notifications.ReminderScheduler
 import com.example.ui.theme.AquaBlue
 import com.example.ui.theme.CardSurface
 import com.example.ui.theme.CardSurfaceElevated
@@ -59,7 +76,6 @@ import com.example.ui.theme.FireOrange
 import com.example.ui.theme.NeonGreen
 import com.example.ui.theme.PitchBlack
 import com.example.ui.theme.TextGray
-import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextWhite
 
 private data class StarterLevelOption(
@@ -73,10 +89,20 @@ private data class StarterLevelOption(
 
 @Composable
 fun OnboardingScreen(
-    onCompleteSetup: (level: String, weeklyTarget: Int, enabledDays: Set<Int>, startImmediately: Boolean) -> Unit,
+    hasProximitySensor: Boolean = true,
+    onCompleteSetup: (
+        level: String,
+        weeklyTarget: Int,
+        enabledDays: Set<Int>,
+        startImmediately: Boolean,
+        preferredCounterMode: String,
+        voiceCoachEnabled: Boolean,
+        notificationsEnabled: Boolean
+    ) -> Unit,
     onSkipAndStartWorkout: () -> Unit
 ) {
-    // Beginner-friendly option first and pre-selected
+    val context = LocalContext.current
+
     val levelOptions = remember {
         listOf(
             StarterLevelOption(
@@ -84,7 +110,7 @@ fun OnboardingScreen(
                 badge = "RECOMMENDED FIRST",
                 subtitle = "Start steady with 5-rep sets & plenty of rest",
                 suggestedWeeklyTarget = 100,
-                suggestedDays = setOf(1, 3, 5), // Mon, Wed, Fri
+                suggestedDays = setOf(1, 3, 5),
                 accentColor = NeonGreen
             ),
             StarterLevelOption(
@@ -109,19 +135,32 @@ fun OnboardingScreen(
     var selectedLevel by remember { mutableStateOf("Beginner") }
     var weeklyGoal by remember { mutableStateOf(100) }
     var selectedDays by remember { mutableStateOf(setOf(1, 3, 5)) }
+    var selectedCounterMode by remember { mutableStateOf(UserPreferences.COUNTER_MODE_TAP) }
+    var voiceCoachEnabled by remember { mutableStateOf(false) }
+    var notificationsEnabled by remember { mutableStateOf(false) }
+    var modeHint by remember { mutableStateOf<String?>(null) }
 
-    val dayLabels = remember {
-        listOf(
-            1 to "M",
-            2 to "T",
-            3 to "W",
-            4 to "T",
-            5 to "F",
-            6 to "S",
-            7 to "S"
-        )
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            selectedCounterMode = UserPreferences.COUNTER_MODE_CAMERA
+            modeHint = null
+        } else {
+            selectedCounterMode = UserPreferences.COUNTER_MODE_TAP
+            modeHint = "Camera permission declined — Tap Mode selected."
+        }
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationsEnabled = granted
+    }
+
+    val dayLabels = remember {
+        listOf(1 to "M", 2 to "T", 3 to "W", 4 to "T", 5 to "F", 6 to "S", 7 to "S")
+    }
     val goalPresets = remember { listOf(75, 100, 150, 250, 350, 500) }
 
     Surface(
@@ -137,7 +176,6 @@ fun OnboardingScreen(
                 .fillMaxSize()
                 .padding(horizontal = 20.dp)
         ) {
-            // Top bar with quick Skip & Start Workout option
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -174,7 +212,7 @@ fun OnboardingScreen(
                     modifier = Modifier.testTag("onboarding_skip_start")
                 ) {
                     Text(
-                        text = "Skip & Start Workout",
+                        text = stringResource(R.string.onboarding_skip_start),
                         color = NeonGreen,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
@@ -190,7 +228,7 @@ fun OnboardingScreen(
             ) {
                 Column {
                     Text(
-                        text = "BUILD YOUR PLAN",
+                        text = stringResource(R.string.onboarding_title),
                         fontSize = 26.sp,
                         fontWeight = FontWeight.Black,
                         color = TextWhite,
@@ -198,14 +236,14 @@ fun OnboardingScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Track reps, follow a plan, and see weekly progress. Place your phone face-up under your chest for hands-free counting or tap to count.",
+                        text = "Track reps, follow a progressive plan, and watch your weekly total climb.",
                         fontSize = 13.sp,
                         color = TextGray,
                         lineHeight = 18.sp
                     )
                 }
 
-                // 1. Starting Level (Beginner First)
+                // 1. Starting Level
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         text = "1. STARTING LEVEL",
@@ -260,7 +298,7 @@ fun OnboardingScreen(
                                             ) {
                                                 Text(
                                                     text = option.badge,
-                                                    fontSize = 9.sp,
+                                                    fontSize = 10.sp,
                                                     fontWeight = FontWeight.Black,
                                                     color = NeonGreen
                                                 )
@@ -303,7 +341,7 @@ fun OnboardingScreen(
                     }
                 }
 
-                // 2. Realistic Weekly Goal
+                // 2. Weekly Goal
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -320,7 +358,7 @@ fun OnboardingScreen(
                         val daysCount = selectedDays.size.coerceAtLeast(1)
                         Text(
                             text = "~${(weeklyGoal + daysCount - 1) / daysCount} reps / session",
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = AquaBlue
                         )
@@ -359,7 +397,7 @@ fun OnboardingScreen(
                                     )
                                     Text(
                                         text = "PUSH-UPS / WEEK",
-                                        fontSize = 10.sp,
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = TextGray,
                                         letterSpacing = 0.8.sp
@@ -398,7 +436,7 @@ fun OnboardingScreen(
                                     ) {
                                         Text(
                                             text = "$preset",
-                                            fontSize = 11.sp,
+                                            fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = if (active) NeonGreen else TextGray
                                         )
@@ -417,7 +455,7 @@ fun OnboardingScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "3. PREFERRED TRAINING DAYS",
+                            text = "3. TRAINING DAYS",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Black,
                             color = TextGray,
@@ -425,7 +463,7 @@ fun OnboardingScreen(
                         )
                         Text(
                             text = "${selectedDays.size} days/week",
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = NeonGreen
                         )
@@ -471,10 +509,171 @@ fun OnboardingScreen(
                     }
                 }
 
+                // 4. Preferred Rep Counting Mode
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "4. REP COUNTING MODE",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        color = TextGray,
+                        letterSpacing = 0.8.sp
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OnboardingModeChip(
+                            title = "Tap",
+                            icon = Icons.Default.TouchApp,
+                            selected = selectedCounterMode == UserPreferences.COUNTER_MODE_TAP,
+                            enabled = true,
+                            accent = NeonGreen,
+                            modifier = Modifier.weight(1f).testTag("onboarding_mode_tap"),
+                            onClick = {
+                                modeHint = null
+                                selectedCounterMode = UserPreferences.COUNTER_MODE_TAP
+                            }
+                        )
+                        OnboardingModeChip(
+                            title = if (hasProximitySensor) "Sensor" else "No Sensor",
+                            icon = Icons.Default.Sensors,
+                            selected = selectedCounterMode == UserPreferences.COUNTER_MODE_PROXIMITY,
+                            enabled = hasProximitySensor,
+                            accent = AquaBlue,
+                            modifier = Modifier.weight(1f).testTag("onboarding_mode_proximity"),
+                            onClick = {
+                                modeHint = null
+                                selectedCounterMode = UserPreferences.COUNTER_MODE_PROXIMITY
+                            }
+                        )
+                        OnboardingModeChip(
+                            title = "Camera",
+                            icon = Icons.Default.CameraAlt,
+                            selected = selectedCounterMode == UserPreferences.COUNTER_MODE_CAMERA,
+                            enabled = true,
+                            accent = AquaBlue,
+                            modifier = Modifier.weight(1f).testTag("onboarding_mode_camera"),
+                            onClick = {
+                                val hasCam = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.CAMERA
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasCam) {
+                                    modeHint = null
+                                    selectedCounterMode = UserPreferences.COUNTER_MODE_CAMERA
+                                } else {
+                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                }
+                            }
+                        )
+                    }
+
+                    Text(
+                        text = when (selectedCounterMode) {
+                            UserPreferences.COUNTER_MODE_PROXIMITY -> stringResource(R.string.mode_proximity_desc)
+                            UserPreferences.COUNTER_MODE_CAMERA -> stringResource(R.string.mode_camera_desc)
+                            else -> stringResource(R.string.mode_tap_desc)
+                        },
+                        fontSize = 12.sp,
+                        color = TextGray,
+                        lineHeight = 16.sp
+                    )
+
+                    if (modeHint != null) {
+                        Text(
+                            text = modeHint.orEmpty(),
+                            fontSize = 12.sp,
+                            color = FireOrange,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                // 5. Audio & Optional Reminders
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = CardSurface),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(0.06f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.onboarding_voice_label),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextWhite
+                                )
+                                Text(
+                                    text = stringResource(R.string.onboarding_voice_desc),
+                                    fontSize = 12.sp,
+                                    color = TextGray
+                                )
+                            }
+                            Switch(
+                                checked = voiceCoachEnabled,
+                                onCheckedChange = { voiceCoachEnabled = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color(0xFF003818),
+                                    checkedTrackColor = NeonGreen
+                                ),
+                                modifier = Modifier.testTag("onboarding_voice_toggle")
+                            )
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = Color.White.copy(0.08f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.onboarding_notif_label),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextWhite
+                                )
+                                Text(
+                                    text = stringResource(R.string.onboarding_notif_reason),
+                                    fontSize = 12.sp,
+                                    color = TextGray,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                            Switch(
+                                checked = notificationsEnabled,
+                                onCheckedChange = { want ->
+                                    if (!want) {
+                                        notificationsEnabled = false
+                                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                        !ReminderScheduler.hasNotificationPermission(context)
+                                    ) {
+                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    } else {
+                                        notificationsEnabled = true
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color(0xFF003818),
+                                    checkedTrackColor = NeonGreen
+                                ),
+                                modifier = Modifier.testTag("onboarding_notif_toggle")
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Bottom Actions
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -483,7 +682,15 @@ fun OnboardingScreen(
             ) {
                 Button(
                     onClick = {
-                        onCompleteSetup(selectedLevel, weeklyGoal, selectedDays, true)
+                        onCompleteSetup(
+                            selectedLevel,
+                            weeklyGoal,
+                            selectedDays,
+                            true,
+                            selectedCounterMode,
+                            voiceCoachEnabled,
+                            notificationsEnabled
+                        )
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -506,7 +713,15 @@ fun OnboardingScreen(
 
                 OutlinedButton(
                     onClick = {
-                        onCompleteSetup(selectedLevel, weeklyGoal, selectedDays, false)
+                        onCompleteSetup(
+                            selectedLevel,
+                            weeklyGoal,
+                            selectedDays,
+                            false,
+                            selectedCounterMode,
+                            voiceCoachEnabled,
+                            notificationsEnabled
+                        )
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -524,6 +739,67 @@ fun OnboardingScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingModeChip(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    enabled: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .height(56.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        color = when {
+            !enabled -> DarkSurface.copy(alpha = 0.45f)
+            selected -> accent.copy(0.18f)
+            else -> CardSurface
+        },
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = when {
+                !enabled -> Color.White.copy(0.04f)
+                selected -> accent
+                else -> Color.White.copy(0.08f)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = when {
+                    !enabled -> TextGray.copy(0.4f)
+                    selected -> accent
+                    else -> TextGray
+                },
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = title,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Black else FontWeight.SemiBold,
+                color = when {
+                    !enabled -> TextGray.copy(0.45f)
+                    selected -> TextWhite
+                    else -> TextGray
+                },
+                maxLines = 1
+            )
         }
     }
 }

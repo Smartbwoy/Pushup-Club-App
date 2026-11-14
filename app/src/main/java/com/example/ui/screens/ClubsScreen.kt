@@ -21,7 +21,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Leaderboard
@@ -56,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,9 +67,11 @@ import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.R
 import com.example.data.cloud.Club
 import com.example.data.cloud.ClubLeaderboardRow
 import com.example.data.cloud.ClubMemberStats
+import com.example.data.cloud.ClubNicknameStore
 import com.example.data.cloud.GoogleAuthHelper
 import com.example.data.cloud.authStateFlow
 import com.example.ui.ClubUiState
@@ -89,11 +94,14 @@ import com.google.firebase.auth.auth
 @Composable
 fun ClubsScreen(
     workoutViewModel: WorkoutViewModel,
+    pendingJoinCode: String? = null,
+    onConsumePendingJoinCode: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
+    val nicknameStore = remember(context) { ClubNicknameStore(context) }
 
     val authStateFlow = remember { Firebase.auth.authStateFlow() }
     val currentUser by authStateFlow.collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
@@ -126,6 +134,7 @@ fun ClubsScreen(
         if (currentUser == null) {
             ClubSignInContent(
                 isLoading = authLoading,
+                pendingJoinCode = pendingJoinCode,
                 errorMessage = authError,
                 onSignInClick = {
                     authLoading = true
@@ -150,13 +159,11 @@ fun ClubsScreen(
             )
         } else {
             val uid = currentUser!!.uid
-            val rawName = currentUser?.displayName?.trim().orEmpty()
-            val fallbackEmailName = currentUser?.email?.substringBefore("@")?.trim().orEmpty()
-            val displayName = rawName.ifEmpty { fallbackEmailName.ifEmpty { "Athlete" } }.take(30)
+            var nickname by remember(uid) { mutableStateOf(nicknameStore.resolveDisplayName(uid)) }
 
-            val stats = remember(displayName, weeklyPushUps, totalPushUps, currentStreak, personalBest) {
+            val stats = remember(nickname, weeklyPushUps, totalPushUps, currentStreak, personalBest) {
                 ClubMemberStats(
-                    displayName = displayName,
+                    displayName = nickname,
                     weeklyPushUps = weeklyPushUps.toLong(),
                     totalPushUps = totalPushUps.toLong(),
                     streakDays = currentStreak.toLong(),
@@ -171,11 +178,25 @@ fun ClubsScreen(
                 )
                 AuthenticatedClubsContent(
                     uid = uid,
-                    displayName = displayName,
+                    displayName = nickname,
                     myStats = stats,
                     clubViewModel = clubViewModel,
+                    pendingJoinCode = pendingJoinCode,
+                    onConsumePendingJoinCode = onConsumePendingJoinCode,
+                    onNicknameUpdated = { newNickname ->
+                        nicknameStore.setCustomNickname(uid, newNickname)
+                        val resolved = nicknameStore.resolveDisplayName(uid)
+                        nickname = resolved
+                        clubViewModel.syncStats(stats.copy(displayName = resolved), silent = false)
+                    },
                     onSignOut = {
                         GoogleAuthHelper.signOut(credentialManager, scope)
+                    },
+                    onDeleteAccount = {
+                        clubViewModel.deleteCloudAccount {
+                            nicknameStore.clearNickname(uid)
+                            GoogleAuthHelper.signOut(credentialManager, scope)
+                        }
                     }
                 )
             }
@@ -186,6 +207,7 @@ fun ClubsScreen(
 @Composable
 private fun ClubSignInContent(
     isLoading: Boolean,
+    pendingJoinCode: String? = null,
     errorMessage: String?,
     onSignInClick: () -> Unit
 ) {
@@ -251,8 +273,27 @@ private fun ClubSignInContent(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    if (!pendingJoinCode.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            color = AquaBlue.copy(0.15f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AquaBlue.copy(0.45f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Invited to club code $pendingJoinCode — sign in below to join!",
+                                color = AquaBlue,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(10.dp),
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+
                     Text(
-                        text = "Solo workouts always stay private and offline. Sign in with Google only when you want to create a club, join with a 6-character code, and compare weekly reps on a live leaderboard.",
+                        text = "Solo workouts always stay private and offline. Sign in with Google only when you want to create or join a club. You can pick any nickname for leaderboards and delete your cloud account anytime.",
                         fontSize = 13.sp,
                         color = TextGray,
                         textAlign = TextAlign.Center,
@@ -318,9 +359,14 @@ private fun AuthenticatedClubsContent(
     displayName: String,
     myStats: ClubMemberStats,
     clubViewModel: ClubViewModel,
-    onSignOut: () -> Unit
+    pendingJoinCode: String? = null,
+    onConsumePendingJoinCode: () -> Unit = {},
+    onNicknameUpdated: (String) -> Unit,
+    onSignOut: () -> Unit,
+    onDeleteAccount: () -> Unit
 ) {
     val context = LocalContext.current
+    val playStoreUrl = stringResource(R.string.play_store_url)
     val clubsState by clubViewModel.clubsState.collectAsStateWithLifecycle()
     val actionBusy by clubViewModel.actionBusy.collectAsStateWithLifecycle()
     val actionMessage by clubViewModel.actionMessage.collectAsStateWithLifecycle()
@@ -328,8 +374,19 @@ private fun AuthenticatedClubsContent(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinDialog by remember { mutableStateOf(false) }
+    var initialJoinCode by remember { mutableStateOf("") }
+    var showNicknameDialog by remember { mutableStateOf(false) }
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var clubToLeave by remember { mutableStateOf<Club?>(null) }
     var clubToDelete by remember { mutableStateOf<Club?>(null) }
+
+    LaunchedEffect(pendingJoinCode) {
+        if (!pendingJoinCode.isNullOrBlank()) {
+            initialJoinCode = pendingJoinCode
+            showJoinDialog = true
+            onConsumePendingJoinCode()
+        }
+    }
 
     // Keep club leaderboard stats fresh whenever weekly/total/streak/best updates while signed in
     LaunchedEffect(myStats) {
@@ -357,14 +414,33 @@ private fun AuthenticatedClubsContent(
                         color = TextWhite,
                         letterSpacing = 1.sp
                     )
-                    Text(
-                        text = "Signed in as $displayName • ${myStats.weeklyPushUps} reps this week",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = NeonGreen,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Nickname: $displayName • ${myStats.weeklyPushUps} reps/wk",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NeonGreen,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        TextButton(
+                            onClick = { showNicknameDialog = true },
+                            modifier = Modifier.testTag("edit_nickname_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Change leaderboard nickname",
+                                tint = AquaBlue,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text("Edit", fontSize = 11.sp, color = AquaBlue, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -578,8 +654,11 @@ private fun AuthenticatedClubsContent(
                             club = club,
                             currentUserId = uid,
                             onShareInvite = {
-                                val inviteText = "Join my Pushup Club \"${club.name}\"!\n" +
-                                    "Open Pushup Club -> Clubs -> Join Code and enter: ${club.joinCode}"
+                                val inviteText = ClubNicknameStore.buildInviteShareMessage(
+                                    clubName = club.name,
+                                    joinCode = club.joinCode,
+                                    playStoreUrl = playStoreUrl
+                                )
                                 val sendIntent = Intent(Intent.ACTION_SEND).apply {
                                     putExtra(Intent.EXTRA_TEXT, inviteText)
                                     type = "text/plain"
@@ -591,6 +670,34 @@ private fun AuthenticatedClubsContent(
                         )
                     }
                 }
+            }
+        }
+
+        // In-App Cloud Account Deletion Option (Google Play User Data Policy compliance)
+        item {
+            OutlinedButton(
+                onClick = { showDeleteAccountDialog = true },
+                enabled = !actionBusy,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, FireOrange.copy(0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("delete_cloud_account_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = FireOrange,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Delete Cloud Account & Club Data",
+                    color = FireOrange,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
             }
         }
 
@@ -611,21 +718,77 @@ private fun AuthenticatedClubsContent(
 
     if (showJoinDialog) {
         JoinClubDialog(
-            onDismiss = { showJoinDialog = false },
+            initialCode = initialJoinCode,
+            onDismiss = {
+                showJoinDialog = false
+                initialJoinCode = ""
+            },
             onJoin = { code ->
                 clubViewModel.joinClub(code, myStats)
                 showJoinDialog = false
+                initialJoinCode = ""
             }
         )
     }
 
+    if (showNicknameDialog) {
+        NicknameEditDialog(
+            currentNickname = displayName,
+            onDismiss = { showNicknameDialog = false },
+            onSave = { newName ->
+                onNicknameUpdated(newName)
+                showNicknameDialog = false
+            }
+        )
+    }
+
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAccountDialog = false },
+            title = {
+                Text("Delete Cloud Account?", color = TextWhite, fontWeight = FontWeight.Black)
+            },
+            text = {
+                Text(
+                    text = "This permanently removes your Firebase Clubs account, removes your stats from all leaderboards (transferring host or removing solo clubs you own), and signs you out. Your local workout history on this phone stays untouched.",
+                    color = TextGray,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteAccountDialog = false
+                        onDeleteAccount()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = FireOrange),
+                    modifier = Modifier.testTag("confirm_delete_cloud_account")
+                ) {
+                    Text("Delete Forever", color = PitchBlack, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAccountDialog = false }) {
+                    Text("Cancel", color = TextWhite)
+                }
+            },
+            containerColor = CardSurfaceElevated
+        )
+    }
+
     clubToLeave?.let { club ->
+        val isHost = club.ownerId == uid
         AlertDialog(
             onDismissRequest = { clubToLeave = null },
             title = { Text("Leave \"${club.name}\"?", color = TextWhite, fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "You can rejoin later using invite code ${club.joinCode}.",
+                    text = if (isHost && club.memberUids.size > 1) {
+                        "Host ownership will automatically transfer to another member, and you can rejoin later using code ${club.joinCode}."
+                    } else {
+                        "You can rejoin later using invite code ${club.joinCode}."
+                    },
                     color = TextGray,
                     fontSize = 13.sp
                 )
@@ -651,12 +814,17 @@ private fun AuthenticatedClubsContent(
     }
 
     clubToDelete?.let { club ->
+        val hasOtherMembers = club.memberUids.size > 1
         AlertDialog(
             onDismissRequest = { clubToDelete = null },
-            title = { Text("Delete \"${club.name}\"?", color = TextWhite, fontWeight = FontWeight.Bold) },
+            title = { Text("Manage \"${club.name}\"", color = TextWhite, fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "This removes the club and leaderboard for all members.",
+                    text = if (hasOtherMembers) {
+                        "Transfer host ownership and leave the club, or permanently delete the club for all members."
+                    } else {
+                        "This permanently removes the club and leaderboard."
+                    },
                     color = TextGray,
                     fontSize = 13.sp
                 )
@@ -669,12 +837,24 @@ private fun AuthenticatedClubsContent(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = FireOrange)
                 ) {
-                    Text("Delete", color = PitchBlack, fontWeight = FontWeight.Bold)
+                    Text("Delete Club", color = PitchBlack, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { clubToDelete = null }) {
-                    Text("Cancel", color = TextWhite)
+                Row {
+                    if (hasOtherMembers) {
+                        TextButton(
+                            onClick = {
+                                clubViewModel.leaveClub(club.id.ifBlank { club.joinCode })
+                                clubToDelete = null
+                            }
+                        ) {
+                            Text("Transfer & Leave", color = AquaBlue, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    TextButton(onClick = { clubToDelete = null }) {
+                        Text("Cancel", color = TextWhite)
+                    }
                 }
             },
             containerColor = CardSurfaceElevated
@@ -726,7 +906,7 @@ private fun ClubLeaderboardCard(
                         ) {
                             Text(
                                 text = "CODE: ${club.joinCode}",
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Black,
                                 color = AquaBlue,
                                 letterSpacing = 1.sp
@@ -765,7 +945,7 @@ private fun ClubLeaderboardCard(
                     ) {
                         Icon(
                             imageVector = if (isOwner) Icons.Default.DeleteOutline else Icons.AutoMirrored.Filled.ExitToApp,
-                            contentDescription = if (isOwner) "Delete club" else "Leave club",
+                            contentDescription = if (isOwner) "Manage or delete club" else "Leave club",
                             tint = FireOrange,
                             modifier = Modifier.size(18.dp)
                         )
@@ -780,7 +960,7 @@ private fun ClubLeaderboardCard(
 
             Text(
                 text = "WEEKLY LEADERBOARD",
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Black,
                 color = TextGray,
                 letterSpacing = 0.8.sp
@@ -838,7 +1018,7 @@ private fun ClubLeaderboardRowItem(
                     ) {
                         Text(
                             text = row.displayName,
-                            fontSize = 13.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextWhite,
                             maxLines = 1,
@@ -850,7 +1030,7 @@ private fun ClubLeaderboardRowItem(
                                     .background(AquaBlue.copy(0.18f), RoundedCornerShape(4.dp))
                                     .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
-                                Text("YOU", fontSize = 8.sp, fontWeight = FontWeight.Black, color = AquaBlue)
+                                Text("YOU", fontSize = 10.sp, fontWeight = FontWeight.Black, color = AquaBlue)
                             }
                         }
                         if (row.isOwner) {
@@ -859,14 +1039,14 @@ private fun ClubLeaderboardRowItem(
                                     .background(ElectricEmerald.copy(0.18f), RoundedCornerShape(4.dp))
                                     .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
-                                Text("HOST", fontSize = 8.sp, fontWeight = FontWeight.Black, color = ElectricEmerald)
+                                Text("HOST", fontSize = 10.sp, fontWeight = FontWeight.Black, color = ElectricEmerald)
                             }
                         }
                     }
                     Text(
                         text = "${row.streakDays}d streak • ${row.personalBest} max • ${row.totalPushUps} total",
-                        fontSize = 10.sp,
-                        color = TextMuted
+                        fontSize = 11.sp,
+                        color = TextGray
                     )
                 }
             }
@@ -880,7 +1060,7 @@ private fun ClubLeaderboardRowItem(
                 )
                 Text(
                     text = "7d reps",
-                    fontSize = 9.sp,
+                    fontSize = 11.sp,
                     color = TextGray
                 )
             }
@@ -954,10 +1134,11 @@ private fun CreateClubDialog(
 
 @Composable
 private fun JoinClubDialog(
+    initialCode: String = "",
     onDismiss: () -> Unit,
     onJoin: (String) -> Unit
 ) {
-    var joinCode by remember { mutableStateOf("") }
+    var joinCode by remember(initialCode) { mutableStateOf(initialCode.uppercase()) }
     var errorMsg by remember { mutableStateOf("") }
 
     AlertDialog(
@@ -1007,6 +1188,75 @@ private fun JoinClubDialog(
                 modifier = Modifier.testTag("confirm_join_club")
             ) {
                 Text("Join", color = PitchBlack, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextWhite)
+            }
+        },
+        containerColor = CardSurfaceElevated
+    )
+}
+
+@Composable
+private fun NicknameEditDialog(
+    currentNickname: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var nicknameInput by remember(currentNickname) { mutableStateOf(currentNickname) }
+    var errorMsg by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Club Leaderboard Nickname", color = TextWhite, fontWeight = FontWeight.Black) },
+        text = {
+            Column {
+                Text(
+                    text = "This nickname is shown to fellow club members instead of your Google account name.",
+                    fontSize = 12.sp,
+                    color = TextGray,
+                    lineHeight = 17.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = nicknameInput,
+                    onValueChange = {
+                        nicknameInput = it.take(30)
+                        errorMsg = ""
+                    },
+                    label = { Text("Nickname (1–30 characters)") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonGreen,
+                        unfocusedBorderColor = Color.White.copy(0.2f),
+                        focusedLabelColor = NeonGreen
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("nickname_input")
+                )
+                if (errorMsg.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(text = errorMsg, color = FireOrange, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleaned = ClubNicknameStore.sanitizeNickname(nicknameInput)
+                    if (cleaned.isEmpty()) {
+                        errorMsg = "Enter at least 1 character."
+                    } else {
+                        onSave(cleaned)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = NeonGreen),
+                modifier = Modifier.testTag("confirm_save_nickname")
+            ) {
+                Text("Save", color = Color(0xFF003818), fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

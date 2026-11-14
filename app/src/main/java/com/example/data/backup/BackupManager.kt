@@ -39,6 +39,7 @@ object BackupManager {
                 put("notificationsEnabled", preferences.notificationsEnabled)
                 put("hasCompletedOnboarding", preferences.hasCompletedOnboarding)
                 put("experienceLevel", preferences.experienceLevel)
+                put("preferredCounterMode", preferences.preferredCounterMode)
             })
 
             put("dailyPlans", JSONArray().apply {
@@ -96,10 +97,11 @@ object BackupManager {
             val preferences = UserPreferences(
                 id = 1,
                 weeklyTarget = prefsObj.optInt("weeklyTarget", 100).coerceAtLeast(10),
-                voiceCoachEnabled = prefsObj.optBoolean("voiceCoachEnabled", true),
+                voiceCoachEnabled = prefsObj.optBoolean("voiceCoachEnabled", false),
                 notificationsEnabled = prefsObj.optBoolean("notificationsEnabled", false),
                 hasCompletedOnboarding = true,
-                experienceLevel = prefsObj.optString("experienceLevel", "Beginner")
+                experienceLevel = prefsObj.optString("experienceLevel", "Beginner"),
+                preferredCounterMode = prefsObj.optString("preferredCounterMode", UserPreferences.COUNTER_MODE_TAP)
             )
 
             val plansArray = root.optJSONArray("dailyPlans") ?: JSONArray()

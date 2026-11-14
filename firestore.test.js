@@ -174,6 +174,14 @@ test("Club creation, scoped list query, join by code, stats update, and leave wo
     })
   );
 
+  // Non-owner Bob cannot hijack ownerId while Alice is still present
+  await assertFails(
+    bobDb.collection("clubs").doc("PUSH7X").update({
+      ownerId: BOB_UID,
+      updatedAt: serverTimestamp(),
+    })
+  );
+
   // Non-owner Bob can leave the club cleanly
   const beforeLeaveSnap = await bobDb.collection("clubs").doc("PUSH7X").get();
   const dataBeforeLeave = beforeLeaveSnap.data();
@@ -187,6 +195,30 @@ test("Club creation, scoped list query, join by code, stats update, and leave wo
     })
   );
 
-  // Owner Alice can delete the club
-  await assertSucceeds(clubRefAlice.delete());
+  // Re-add Bob so we can verify owner Alice transferring ownership to Bob and leaving
+  const rejoinSnap = await bobDb.collection("clubs").doc("PUSH7X").get();
+  const rejoinData = rejoinSnap.data();
+  await assertSucceeds(
+    bobDb.collection("clubs").doc("PUSH7X").update({
+      memberUids: [...rejoinData.memberUids, BOB_UID],
+      [`memberStats.${BOB_UID}`]: validMemberStats("Bob", 60, 200, 2, 20),
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  const beforeOwnerTransferSnap = await aliceDb.collection("clubs").doc("PUSH7X").get();
+  const dataBeforeTransfer = beforeOwnerTransferSnap.data();
+  const statsAfterOwnerLeaves = { ...dataBeforeTransfer.memberStats };
+  delete statsAfterOwnerLeaves[ALICE_UID];
+  await assertSucceeds(
+    clubRefAlice.update({
+      ownerId: BOB_UID,
+      memberUids: dataBeforeTransfer.memberUids.filter((u) => u !== ALICE_UID),
+      memberStats: statsAfterOwnerLeaves,
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  // New owner Bob can delete the club
+  await assertSucceeds(bobDb.collection("clubs").doc("PUSH7X").delete());
 });

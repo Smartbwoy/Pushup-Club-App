@@ -124,7 +124,7 @@ class ClubViewModel(
             clearFeedback()
             repository.leaveClub(clubId)
                 .onSuccess {
-                    _actionMessage.value = "Left club."
+                    _actionMessage.value = "Left club cleanly."
                 }
                 .onFailure { err ->
                     _actionError.value = err.localizedMessage ?: "Could not leave club."
@@ -146,6 +146,23 @@ class ClubViewModel(
                     _actionError.value = err.localizedMessage ?: "Could not delete club."
                 }
             _actionBusy.value = false
+        }
+    }
+
+    fun deleteCloudAccount(onSuccess: () -> Unit) {
+        if (_actionBusy.value) return
+        viewModelScope.launch {
+            _actionBusy.value = true
+            clearFeedback()
+            repository.deleteCloudAccountAndClubData()
+                .onSuccess {
+                    _actionBusy.value = false
+                    onSuccess()
+                }
+                .onFailure { err ->
+                    _actionError.value = err.localizedMessage ?: "Could not delete cloud account."
+                    _actionBusy.value = false
+                }
         }
     }
 

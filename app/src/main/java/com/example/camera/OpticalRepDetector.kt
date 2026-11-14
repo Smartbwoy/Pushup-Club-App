@@ -6,18 +6,26 @@ data class OpticalFrameResult(
     val isCalibrating: Boolean,
     val isDownPosition: Boolean,
     val repDetected: Boolean,
-    val depthProgress: Float // 0f (top) .. 1f (bottom/shadow dip)
+    val depthProgress: Float, // 0f (top) .. 1f (bottom/shadow dip)
+    val isWarmingUp: Boolean = false,
+    val countdownSecondsLeft: Int = 0,
+    val isTooDark: Boolean = false,
+    val calibrationJustCompleted: Boolean = false
 )
 
 /**
- * Calibrates ambient ceiling brightness over the front camera while the user holds the top
- * plank position, then detects push-up dips when the chest/head shadows the central ROI
- * and recovers back toward baseline. Includes a 550ms refractory cooldown to prevent double counts.
+ * Calibrates ambient ceiling brightness over the front camera after an optional countdown delay
+ * so the athlete can get into plank position, then detects push-up dips when the chest/head
+ * shadows the central ROI and recovers back toward baseline.
+ * Includes a 550ms refractory cooldown to prevent double counts and a low-light check.
  */
 class OpticalRepDetector(
     private val cooldownMs: Long = 550L,
-    private val calibrationFramesRequired: Int = 8
+    private val calibrationFramesRequired: Int = 8,
+    private val warmupMs: Long = 0L,
+    private val lowLightThreshold: Float = 28f
 ) {
+    private var warmupStartTimestampMs: Long? = null
     private var baselineLuma: Float = 0f
     private var calibrationSum: Float = 0f
     private var calibrationCount: Int = 0
@@ -26,6 +34,7 @@ class OpticalRepDetector(
     private var lastRepTimestampMs: Long? = null
 
     fun reset() {
+        warmupStartTimestampMs = null
         baselineLuma = 0f
         calibrationSum = 0f
         calibrationCount = 0
@@ -34,19 +43,46 @@ class OpticalRepDetector(
         lastRepTimestampMs = null
     }
 
+    fun isCalibrated(): Boolean = calibrationCount >= calibrationFramesRequired
+
     fun processFrameLuminance(luma: Float, timestampMs: Long): OpticalFrameResult {
+        if (warmupMs > 0L) {
+            val start = warmupStartTimestampMs ?: timestampMs.also { warmupStartTimestampMs = it }
+            val elapsed = timestampMs - start
+            if (elapsed < warmupMs) {
+                val remaining = warmupMs - elapsed
+                val secsLeft = ((remaining + 999L) / 1000L).toInt().coerceAtLeast(1)
+                return OpticalFrameResult(
+                    isCalibrating = true,
+                    isDownPosition = false,
+                    repDetected = false,
+                    depthProgress = 0f,
+                    isWarmingUp = true,
+                    countdownSecondsLeft = secsLeft,
+                    isTooDark = luma < lowLightThreshold
+                )
+            }
+        }
+
         if (calibrationCount < calibrationFramesRequired) {
             calibrationSum += luma
             calibrationCount++
-            if (calibrationCount == calibrationFramesRequired) {
-                baselineLuma = (calibrationSum / calibrationFramesRequired).coerceAtLeast(20f)
+            val justCompleted = (calibrationCount == calibrationFramesRequired)
+            var currentAvg = luma
+            if (justCompleted) {
+                currentAvg = calibrationSum / calibrationFramesRequired
+                baselineLuma = currentAvg.coerceAtLeast(20f)
                 hasSeenUpAfterEnable = true
             }
             return OpticalFrameResult(
-                isCalibrating = true,
+                isCalibrating = !justCompleted,
                 isDownPosition = false,
                 repDetected = false,
-                depthProgress = 0f
+                depthProgress = 0f,
+                isWarmingUp = false,
+                countdownSecondsLeft = 0,
+                isTooDark = (if (justCompleted) baselineLuma else currentAvg) < lowLightThreshold,
+                calibrationJustCompleted = justCompleted
             )
         }
 
@@ -68,7 +104,7 @@ class OpticalRepDetector(
             isDown = false
             hasSeenUpAfterEnable = true
             // Gentle EMA drift tracking at top position
-            baselineLuma = baselineLuma * 0.96f + luma * 0.04f
+            baselineLuma = baselineLuma * 0.98f + luma * 0.02f
         }
 
         val depth = if (baselineLuma > dipThreshold) {
@@ -79,7 +115,11 @@ class OpticalRepDetector(
             isCalibrating = false,
             isDownPosition = isDown,
             repDetected = repCounted,
-            depthProgress = depth
+            depthProgress = depth,
+            isWarmingUp = false,
+            countdownSecondsLeft = 0,
+            isTooDark = baselineLuma < lowLightThreshold,
+            calibrationJustCompleted = false
         )
     }
 
