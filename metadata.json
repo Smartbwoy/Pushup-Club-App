@@ -1,0 +1,6 @@
+{
+  "name": "PushUp Pro",
+  "description": "An elite push-up tracker designed for progressive overload logging, structured workout sessions, workout scheduling, streak tracking, goals, achievements, and text-to-speech voice coaching.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
