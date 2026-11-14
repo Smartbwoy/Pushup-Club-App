@@ -14,6 +14,29 @@ import org.junit.Test
 class ClubRepositoryRuleTest : FirestoreEmulatorTestBase() {
 
     @Test
+    fun createClub_collisionRetriesWithoutChangingExistingClub() = runBlocking {
+        signInTestUser(ALICE_EMAIL)
+        val stats = ClubMemberStats("Alice", 50, 100, 1, 20)
+        val original = ClubRepository(firestore, auth).createClub("Original Club", stats).getOrThrow()
+        var calls = 0
+        val repo = ClubRepository(firestore, auth) {
+            if (calls++ == 0) original.joinCode else ClubRepository.generateJoinCode()
+        }
+        val created = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.createClub("Second Club", stats).getOrThrow()
+        }
+        assertTrue(created.joinCode != original.joinCode)
+        val unchanged = firestore.collection("clubs").document(original.joinCode).get().await()
+        assertEquals("Original Club", unchanged.getString("name"))
+
+        val exhausted = ClubRepository(firestore, auth) { original.joinCode }
+            .createClub("Never Created", stats)
+        assertTrue(exhausted.isFailure)
+        assertEquals("Original Club", firestore.collection("clubs")
+            .document(original.joinCode).get().await().getString("name"))
+    }
+
+    @Test
     fun createAndJoinClub_authenticatedUsers_succeedsAndStreamsRealtimeUpdates() = runBlocking {
         val aliceUid = signInTestUser(ALICE_EMAIL)
         val aliceRepo = ClubRepository(firestore, auth)

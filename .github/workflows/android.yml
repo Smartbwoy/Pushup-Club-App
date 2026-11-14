@@ -1,0 +1,47 @@
+name: Android build
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36.1' 'build-tools;36.0.0'
+      - name: Write emulator-only Firebase configuration
+        run: |
+          python3 - <<'PY'
+          import json
+          config = {
+            "project_info": {"project_number": "123456789012", "project_id": "demo-no-project", "storage_bucket": "demo-no-project.appspot.com"},
+            "client": [{
+              "client_info": {"mobilesdk_app_id": "1:123456789012:android:0123456789abcdef", "android_client_info": {"package_name": "com.aistudio.pushuptracker.fylsqb"}},
+              "oauth_client": [{"client_id": "123456789012-example.apps.googleusercontent.com", "client_type": 3}],
+              "api_key": [{"current_key": "AIzaSyDummyKeyForEmulatorBuildsOnly000000"}]
+            }],
+            "configuration_version": "1"
+          }
+          with open('app/google-services.json', 'w') as f:
+              json.dump(config, f)
+          PY
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools@14.22.0
+      - name: Build and test against emulators
+        run: firebase emulators:exec --project demo-no-project --only auth,firestore './gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest'
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: app/build/reports/tests/

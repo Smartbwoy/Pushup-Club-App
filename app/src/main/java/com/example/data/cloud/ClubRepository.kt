@@ -20,7 +20,8 @@ import java.security.SecureRandom
 
 class ClubRepository(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val auth: FirebaseAuth = Firebase.auth,
+    private val joinCodeGenerator: () -> String = { generateJoinCode() }
 ) {
     constructor(context: Context) : this(
         db = FirebaseFirestore.getInstance(
@@ -70,36 +71,47 @@ class ClubRepository(
         }
 
         val cleanStats = stats.toPayloadMap()
-        val code = generateJoinCode()
-        val docRef = db.collection(COLLECTION_CLUBS).document(code)
-        val payload = mapOf(
-            "name" to cleanName,
-            "joinCode" to code,
-            "ownerId" to uid,
-            "memberUids" to listOf(uid),
-            "memberStats" to mapOf(uid to cleanStats),
-            "createdAt" to FieldValue.serverTimestamp(),
-            "updatedAt" to FieldValue.serverTimestamp()
-        )
-        return try {
-            docRef.set(payload).await()
-            val created = docRef.get().await()
-                .toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                ?: Club(
-                    id = code,
-                    name = cleanName,
-                    joinCode = code,
-                    ownerId = uid,
-                    memberUids = listOf(uid),
-                    memberStats = mapOf(uid to stats)
-                )
-            Result.success(created)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, docRef.path)
-            Result.failure(e)
+        repeat(MAX_CODE_ATTEMPTS) {
+            val code = joinCodeGenerator()
+            val docRef = db.collection(COLLECTION_CLUBS).document(code)
+            val payload = mapOf(
+                "name" to cleanName,
+                "joinCode" to code,
+                "ownerId" to uid,
+                "memberUids" to listOf(uid),
+                "memberStats" to mapOf(uid to cleanStats),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            try {
+                val reserved = db.runTransaction { transaction ->
+                    if (transaction.get(docRef).exists()) {
+                        false
+                    } else {
+                        transaction.set(docRef, payload)
+                        true
+                    }
+                }.await()
+                if (!reserved) return@repeat
+                val created = docRef.get().await()
+                    .toObject(Club::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    ?: Club(
+                        id = code,
+                        name = cleanName,
+                        joinCode = code,
+                        ownerId = uid,
+                        memberUids = listOf(uid),
+                        memberStats = mapOf(uid to stats)
+                    )
+                return Result.success(created)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.CREATE, docRef.path)
+                return Result.failure(e)
+            }
         }
+        return Result.failure(IllegalStateException("Unable to reserve a club code. Please try again."))
     }
 
     /**
@@ -327,6 +339,7 @@ class ClubRepository(
     }
 
     companion object {
+        private const val MAX_CODE_ATTEMPTS = 5
         private const val COLLECTION_CLUBS = "clubs"
         private const val COLLECTION_USERS = "users"
         private const val CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
