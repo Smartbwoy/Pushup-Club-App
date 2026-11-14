@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MilitaryTech
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarHalf
@@ -36,6 +37,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -49,11 +51,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ChallengeGoal
 import com.example.ui.WorkoutViewModel
+import com.example.ui.components.ShareCardType
+import com.example.ui.components.ShareProgressDialog
 import com.example.ui.theme.AquaBlue
 import com.example.ui.theme.CardSurface
 import com.example.ui.theme.CardSurfaceElevated
@@ -73,8 +78,13 @@ fun AchievementsScreen(
 ) {
     val goals by viewModel.goals.collectAsState()
     val totalPushups by viewModel.totalPushUps.collectAsState()
+    val weeklyPushups by viewModel.weeklyPushUps.collectAsState()
+    val streak by viewModel.currentStreak.collectAsState()
+    val personalBest by viewModel.personalBest.collectAsState()
+    val preferences by viewModel.preferences.collectAsState()
 
     var selectedFilter by remember { mutableStateOf(0) } // 0 = All, 1 = Unlocked, 2 = Locked
+    var showShareDialog by remember { mutableStateOf(false) }
 
     val achievements = goals.filter { it.isCompleted }
     val displayGoals = remember(goals, selectedFilter) {
@@ -108,21 +118,42 @@ fun AchievementsScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             // Screen Heading Title
-            Column {
-                Text(
-                    text = "TROPHIES & RANKS",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Black,
-                    color = TextWhite,
-                    letterSpacing = 1.sp
-                )
-                Text(
-                    text = "UNLOCK BADGES & ASCEND ATHLETIC TIERS",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TextGray,
-                    letterSpacing = 0.5.sp
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "TROPHIES & RANKS",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black,
+                        color = TextWhite,
+                        letterSpacing = 1.sp
+                    )
+                    Text(
+                        text = "UNLOCK BADGES & ASCEND ATHLETIC TIERS",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextGray,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+
+                IconButton(
+                    onClick = { showShareDialog = true },
+                    modifier = Modifier
+                        .background(CardSurfaceElevated, CircleShape)
+                        .size(48.dp)
+                        .testTag("achievements_share_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Share Rank and Streak",
+                        tint = AquaBlue,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -263,6 +294,18 @@ fun AchievementsScreen(
                     Spacer(modifier = Modifier.height(80.dp))
                 }
             }
+        }
+
+        if (showShareDialog) {
+            ShareProgressDialog(
+                weeklyPushUps = weeklyPushups,
+                weeklyTarget = preferences?.weeklyTarget ?: 100,
+                streakDays = streak,
+                personalBest = personalBest,
+                initialType = ShareCardType.STREAK,
+                onShareTriggered = { viewModel.recordShareInitiated() },
+                onDismiss = { showShareDialog = false }
+            )
         }
     }
 }

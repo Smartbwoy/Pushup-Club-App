@@ -1,8 +1,13 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,11 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Alarm
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrackChanges
@@ -40,11 +42,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,21 +56,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.model.DailyPlan
-import com.example.data.model.UserPreferences
+import com.example.notifications.ReminderScheduler
 import com.example.ui.WorkoutViewModel
+import com.example.ui.components.AppInfoPrivacyDialog
 import com.example.ui.theme.AquaBlue
 import com.example.ui.theme.CardSurface
 import com.example.ui.theme.CardSurfaceElevated
 import com.example.ui.theme.DarkSurface
-import com.example.ui.theme.ElectricEmerald
 import com.example.ui.theme.FireOrange
 import com.example.ui.theme.NeonGreen
 import com.example.ui.theme.PitchBlack
@@ -79,19 +86,59 @@ fun ScheduleScreen(
     viewModel: WorkoutViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     val plans by viewModel.plans.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
+    val milestones by viewModel.milestones.collectAsState()
 
     var weeklyTargetInput by remember { mutableStateOf("") }
     var voiceCoachEnabled by remember { mutableStateOf(true) }
-    var notificationsEnabled by remember { mutableStateOf(true) }
+    var notificationsEnabled by remember { mutableStateOf(false) }
+    var hasNotificationPermission by remember {
+        mutableStateOf(ReminderScheduler.hasNotificationPermission(context))
+    }
+    var permissionDeniedPrompt by remember { mutableStateOf(false) }
+    var showInfoPrivacyDialog by remember { mutableStateOf(false) }
 
-    // Synchronize local states when DB loads
-    preferences?.let { prefs ->
-        if (weeklyTargetInput.isEmpty()) {
+    // Synchronize local states cleanly when DB updates
+    LaunchedEffect(preferences) {
+        preferences?.let { prefs ->
             weeklyTargetInput = prefs.weeklyTarget.toString()
             voiceCoachEnabled = prefs.voiceCoachEnabled
             notificationsEnabled = prefs.notificationsEnabled
+        }
+    }
+
+    // Re-check notification permission when returning from system Settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotificationPermission = ReminderScheduler.hasNotificationPermission(context)
+                if (hasNotificationPermission) {
+                    permissionDeniedPrompt = false
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted
+        val wt = weeklyTargetInput.toIntOrNull() ?: preferences?.weeklyTarget ?: 100
+        if (granted) {
+            permissionDeniedPrompt = false
+            notificationsEnabled = true
+            viewModel.updatePreferences(wt, voiceCoachEnabled, true)
+            viewModel.speak("Reminders active!")
+        } else {
+            permissionDeniedPrompt = true
+            notificationsEnabled = false
+            viewModel.updatePreferences(wt, voiceCoachEnabled, false)
         }
     }
 
@@ -99,6 +146,10 @@ fun ScheduleScreen(
 
     val plannedTotalReps = plans.filter { it.isEnabled }.sumOf { it.dailyTarget }
     val activeDaysCount = plans.count { it.isEnabled }
+    val effectiveRemindersActive = notificationsEnabled && hasNotificationPermission
+    val nextReminderSummary = remember(plans, effectiveRemindersActive) {
+        ReminderScheduler.getNextScheduledReminderSummary(plans, effectiveRemindersActive)
+    }
 
     Box(modifier = modifier.fillMaxSize().background(PitchBlack)) {
         Column(
@@ -109,21 +160,42 @@ fun ScheduleScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             // Screen Heading Title
-            Column {
-                Text(
-                    text = "WEEKLY SCHEDULE",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Black,
-                    color = TextWhite,
-                    letterSpacing = 1.sp
-                )
-                Text(
-                    text = "CONFIGURE TARGET REPETITIONS & TIMERS",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TextGray,
-                    letterSpacing = 0.5.sp
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "WEEKLY SCHEDULE",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black,
+                        color = TextWhite,
+                        letterSpacing = 1.sp
+                    )
+                    Text(
+                        text = "CONFIGURE TARGET REPETITIONS & REMINDERS",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextGray,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+
+                IconButton(
+                    onClick = { showInfoPrivacyDialog = true },
+                    modifier = Modifier
+                        .background(CardSurfaceElevated, CircleShape)
+                        .size(48.dp)
+                        .testTag("app_info_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "App Info, Milestones, and Privacy",
+                        tint = AquaBlue,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -165,7 +237,7 @@ fun ScheduleScreen(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "/ ${weeklyTargetInput.ifEmpty { "300" }} target reps",
+                                        text = "/ ${weeklyTargetInput.ifEmpty { "100" }} target reps",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = TextGray
@@ -198,9 +270,7 @@ fun ScheduleScreen(
                         border = BorderStroke(1.dp, Color.White.copy(0.06f))
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.Settings, contentDescription = null, tint = NeonGreen, modifier = Modifier.size(20.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(text = "Preferences & Reminders", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = TextWhite)
@@ -216,7 +286,7 @@ fun ScheduleScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text("Weekly Cumulative Target", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextWhite)
-                                    Text("Reps goal across all sessions", fontSize = 11.sp, color = TextGray)
+                                    Text("7-day push-ups goal", fontSize = 11.sp, color = TextGray)
                                 }
 
                                 OutlinedTextField(
@@ -257,7 +327,7 @@ fun ScheduleScreen(
                                     checked = voiceCoachEnabled,
                                     onCheckedChange = {
                                         voiceCoachEnabled = it
-                                        val wt = weeklyTargetInput.toIntOrNull() ?: 300
+                                        val wt = weeklyTargetInput.toIntOrNull() ?: 100
                                         viewModel.updatePreferences(wt, it, notificationsEnabled)
                                         if (it) {
                                             viewModel.speak("Voice coach engine online!")
@@ -273,7 +343,7 @@ fun ScheduleScreen(
 
                             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(0.06f))
 
-                            // Notification Switch Toggler
+                            // Notification Switch Toggler with Real Permission + Scheduling
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -281,17 +351,42 @@ fun ScheduleScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text("Daily Training Reminders", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextWhite)
-                                    Text("Alerts on scheduled workout days", fontSize = 11.sp, color = TextGray)
+                                    val statusText = when {
+                                        notificationsEnabled && !hasNotificationPermission -> "Notification permission required to send alerts"
+                                        effectiveRemindersActive && nextReminderSummary != null -> "Active • Next reminder: $nextReminderSummary"
+                                        effectiveRemindersActive -> "Active • Enable at least one workout day below"
+                                        else -> "Off • Toggle on for alerts on training days"
+                                    }
+                                    Text(
+                                        text = statusText,
+                                        fontSize = 11.sp,
+                                        color = when {
+                                            notificationsEnabled && !hasNotificationPermission -> FireOrange
+                                            effectiveRemindersActive && nextReminderSummary != null -> NeonGreen
+                                            else -> TextGray
+                                        }
+                                    )
                                 }
 
                                 Switch(
-                                    checked = notificationsEnabled,
-                                    onCheckedChange = {
-                                        notificationsEnabled = it
-                                        val wt = weeklyTargetInput.toIntOrNull() ?: 300
-                                        viewModel.updatePreferences(wt, voiceCoachEnabled, it)
-                                        if (it) {
-                                            viewModel.speak("Reminders active!")
+                                    checked = effectiveRemindersActive,
+                                    onCheckedChange = { wantEnabled ->
+                                        val wt = weeklyTargetInput.toIntOrNull() ?: 100
+                                        if (wantEnabled) {
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                                !ReminderScheduler.hasNotificationPermission(context)
+                                            ) {
+                                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                            } else {
+                                                permissionDeniedPrompt = false
+                                                notificationsEnabled = true
+                                                viewModel.updatePreferences(wt, voiceCoachEnabled, true)
+                                                viewModel.speak("Reminders active!")
+                                            }
+                                        } else {
+                                            permissionDeniedPrompt = false
+                                            notificationsEnabled = false
+                                            viewModel.updatePreferences(wt, voiceCoachEnabled, false)
                                         }
                                     },
                                     colors = SwitchDefaults.colors(
@@ -300,6 +395,48 @@ fun ScheduleScreen(
                                     ),
                                     modifier = Modifier.testTag("notifications_toggle")
                                 )
+                            }
+
+                            if (permissionDeniedPrompt || (notificationsEnabled && !hasNotificationPermission)) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(FireOrange.copy(0.12f), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.NotificationsOff,
+                                            contentDescription = null,
+                                            tint = FireOrange,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Allow notifications so reminders can arrive on time.",
+                                            fontSize = 11.sp,
+                                            color = TextWhite
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            val settingsIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                            }
+                                            try {
+                                                context.startActivity(settingsIntent)
+                                            } catch (_: Exception) {}
+                                        }
+                                    ) {
+                                        Text("Settings", color = FireOrange, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
+                                }
                             }
                         }
                     }
@@ -318,7 +455,7 @@ fun ScheduleScreen(
                 }
 
                 // Loop of daily plans Monday to Sunday
-                items(plans) { plan ->
+                items(plans, key = { it.dayOfWeek }) { plan ->
                     val isEditing = activeDayEditId == plan.dayOfWeek
                     DailyPlanPlannerRow(
                         plan = plan,
@@ -333,10 +470,57 @@ fun ScheduleScreen(
                     )
                 }
 
+                // Discreet App Info, Milestones & Privacy Footer Card
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showInfoPrivacyDialog = true },
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(0.06f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Privacy, Support & Milestones",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextWhite
+                                )
+                                Text(
+                                    text = "Offline storage policy • Contact support • View app milestones",
+                                    fontSize = 11.sp,
+                                    color = TextGray
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Open Privacy and Support",
+                                tint = AquaBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+
                 item {
                     Spacer(modifier = Modifier.height(80.dp))
                 }
             }
+        }
+
+        if (showInfoPrivacyDialog) {
+            AppInfoPrivacyDialog(
+                milestones = milestones,
+                onDismiss = { showInfoPrivacyDialog = false }
+            )
         }
     }
 }
@@ -351,6 +535,7 @@ fun DailyPlanPlannerRow(
     var targetStr by remember(plan) { mutableStateOf(plan.dailyTarget.toString()) }
     var timeStr by remember(plan) { mutableStateOf(plan.workoutTime) }
     var isDayEnabled by remember(plan) { mutableStateOf(plan.isEnabled) }
+    var timeError by remember(plan) { mutableStateOf("") }
 
     Card(
         modifier = Modifier
@@ -420,7 +605,6 @@ fun DailyPlanPlannerRow(
                     }
                 }
 
-                // Checkbox status toggle
                 Switch(
                     checked = isDayEnabled,
                     onCheckedChange = {
@@ -472,6 +656,40 @@ fun DailyPlanPlannerRow(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                Text(
+                    text = "Quick Reminder Times:",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TextGray
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("07:00", "12:00", "18:00", "20:00").forEach { presetTime ->
+                        OutlinedButton(
+                            onClick = {
+                                timeStr = presetTime
+                                timeError = ""
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, if (timeStr == presetTime) AquaBlue else Color.White.copy(0.12f))
+                        ) {
+                            Text(
+                                text = presetTime,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (timeStr == presetTime) AquaBlue else TextWhite
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -494,7 +712,10 @@ fun DailyPlanPlannerRow(
 
                     OutlinedTextField(
                         value = timeStr,
-                        onValueChange = { timeStr = it },
+                        onValueChange = {
+                            timeStr = it
+                            timeError = ""
+                        },
                         label = { Text("Time (HH:mm)", fontSize = 10.sp) },
                         modifier = Modifier
                             .weight(1f)
@@ -508,14 +729,20 @@ fun DailyPlanPlannerRow(
 
                     Button(
                         onClick = {
-                            val targetInt = targetStr.toIntOrNull() ?: plan.dailyTarget
-                            onEditFinished(
-                                plan.copy(
-                                    isEnabled = isDayEnabled,
-                                    dailyTarget = targetInt,
-                                    workoutTime = timeStr
+                            val parsedTime = ReminderScheduler.parseTimeOrNull(timeStr)
+                            if (parsedTime == null) {
+                                timeError = "Use 24h HH:mm format (e.g. 18:00)"
+                            } else {
+                                val targetInt = (targetStr.toIntOrNull() ?: plan.dailyTarget).coerceAtLeast(1)
+                                val formattedTime = ReminderScheduler.formatTime(parsedTime.first, parsedTime.second)
+                                onEditFinished(
+                                    plan.copy(
+                                        isEnabled = isDayEnabled,
+                                        dailyTarget = targetInt,
+                                        workoutTime = formattedTime
+                                    )
                                 )
-                            )
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen),
                         shape = RoundedCornerShape(10.dp),
@@ -525,6 +752,16 @@ fun DailyPlanPlannerRow(
                     ) {
                         Icon(Icons.Default.Save, contentDescription = "Save settings", tint = Color(0xFF003818))
                     }
+                }
+
+                if (timeError.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = timeError,
+                        color = FireOrange,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }

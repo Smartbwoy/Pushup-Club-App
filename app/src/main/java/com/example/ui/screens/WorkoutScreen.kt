@@ -46,7 +46,9 @@ import androidx.compose.material.icons.filled.NavigateNext
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -87,7 +89,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.TrainingProgram
+import com.example.data.repository.WorkoutRepository
 import com.example.ui.WorkoutViewModel
+import com.example.ui.components.SensorCalibrationDialog
+import com.example.ui.components.ShareCardType
+import com.example.ui.components.ShareProgressDialog
 import com.example.ui.theme.AquaBlue
 import com.example.ui.theme.CardSurface
 import com.example.ui.theme.CardSurfaceElevated
@@ -106,17 +112,26 @@ fun WorkoutScreen(
     modifier: Modifier = Modifier
 ) {
     val totalPushups by viewModel.totalPushUps.collectAsState()
+    val weeklyPushups by viewModel.weeklyPushUps.collectAsState()
     val streak by viewModel.currentStreak.collectAsState()
     val best by viewModel.personalBest.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
     val workoutState by viewModel.workoutState.collectAsState()
 
-    val targetWeekly = preferences?.weeklyTarget ?: 300
+    val targetWeekly = preferences?.weeklyTarget ?: 100
     val progressPercent = if (targetWeekly > 0) {
-        (totalPushups.toFloat() / targetWeekly.toFloat()).coerceIn(0f, 1f)
+        (weeklyPushups.toFloat() / targetWeekly.toFloat()).coerceIn(0f, 1f)
     } else 0f
 
     var showManualDialog by remember { mutableStateOf(false) }
+    var showShareDialog by remember { mutableStateOf(false) }
+
+    val preferredLevel = preferences?.experienceLevel ?: "Beginner"
+    val orderedPrograms = remember(preferredLevel) {
+        TrainingProgram.programs.sortedBy {
+            if (it.difficulty.equals(preferredLevel, ignoreCase = true)) 0 else 1
+        }
+    }
 
     Box(modifier = modifier.fillMaxSize().background(PitchBlack)) {
         LazyColumn(
@@ -160,31 +175,49 @@ fun WorkoutScreen(
                         )
                     }
 
-                    // Voice coach quick indicator
-                    IconButton(
-                        onClick = {
-                            preferences?.let {
-                                val nextState = !it.voiceCoachEnabled
-                                viewModel.updatePreferences(
-                                    weeklyTarget = it.weeklyTarget,
-                                    voiceEnabled = nextState,
-                                    notificationsEnabled = it.notificationsEnabled
-                                )
-                                if (nextState) {
-                                    viewModel.speak("Voice coach enabled")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Optional Share Progress button
+                        IconButton(
+                            onClick = { showShareDialog = true },
+                            modifier = Modifier
+                                .background(CardSurfaceElevated, CircleShape)
+                                .size(48.dp)
+                                .testTag("share_progress_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Share Progress",
+                                tint = AquaBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Voice coach quick indicator
+                        IconButton(
+                            onClick = {
+                                preferences?.let {
+                                    val nextState = !it.voiceCoachEnabled
+                                    viewModel.updatePreferences(
+                                        weeklyTarget = it.weeklyTarget,
+                                        voiceEnabled = nextState,
+                                        notificationsEnabled = it.notificationsEnabled
+                                    )
+                                    if (nextState) {
+                                        viewModel.speak("Voice coach enabled")
+                                    }
                                 }
-                            }
-                        },
-                        modifier = Modifier
-                            .background(CardSurfaceElevated, CircleShape)
-                            .size(44.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (preferences?.voiceCoachEnabled == true) Icons.Default.Mic else Icons.Default.MicOff,
-                            contentDescription = "Voice Coach Toggle",
-                            tint = if (preferences?.voiceCoachEnabled == true) NeonGreen else TextMuted,
-                            modifier = Modifier.size(22.dp)
-                        )
+                            },
+                            modifier = Modifier
+                                .background(CardSurfaceElevated, CircleShape)
+                                .size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (preferences?.voiceCoachEnabled == true) Icons.Default.Mic else Icons.Default.MicOff,
+                                contentDescription = "Voice Coach Toggle",
+                                tint = if (preferences?.voiceCoachEnabled == true) NeonGreen else TextMuted,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -196,7 +229,7 @@ fun WorkoutScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     StatMetricCard(
-                        title = "TOTAL",
+                        title = "LIFETIME",
                         value = "$totalPushups",
                         unit = "reps",
                         icon = Icons.Default.FitnessCenter,
@@ -265,11 +298,18 @@ fun WorkoutScreen(
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = "$totalPushups",
-                                    fontSize = 46.sp,
+                                    text = "THIS WEEK",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = AquaBlue,
+                                    letterSpacing = 1.sp
+                                )
+                                Text(
+                                    text = "$weeklyPushups",
+                                    fontSize = 44.sp,
                                     fontWeight = FontWeight.Black,
                                     color = TextWhite,
-                                    lineHeight = 46.sp
+                                    lineHeight = 44.sp
                                 )
                                 Text(
                                     text = "OF $targetWeekly GOAL",
@@ -296,11 +336,11 @@ fun WorkoutScreen(
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        val remaining = targetWeekly - totalPushups
+                        val remaining = targetWeekly - weeklyPushups
                         val messageStr = if (remaining > 0) {
-                            "$remaining push-ups remaining this week"
+                            "$remaining push-ups remaining in the last 7 days"
                         } else {
-                            "Goal achieved! Crushing past target by ${-remaining} reps"
+                            "Weekly goal achieved! Ahead by ${-remaining} reps"
                         }
                         Text(
                             text = messageStr,
@@ -423,9 +463,10 @@ fun WorkoutScreen(
                 }
             }
 
-            items(TrainingProgram.programs) { program ->
+            items(orderedPrograms) { program ->
                 TrainingProgramItemCard(
                     program = program,
+                    isRecommended = program.difficulty.equals(preferredLevel, ignoreCase = true),
                     onStart = { viewModel.startProgramWorkout(program) }
                 )
             }
@@ -443,6 +484,18 @@ fun WorkoutScreen(
                     viewModel.logManualCount(reps, sets)
                     showManualDialog = false
                 }
+            )
+        }
+
+        if (showShareDialog) {
+            ShareProgressDialog(
+                weeklyPushUps = weeklyPushups,
+                weeklyTarget = targetWeekly,
+                streakDays = streak,
+                personalBest = best,
+                initialType = ShareCardType.WEEKLY,
+                onShareTriggered = { viewModel.recordShareInitiated() },
+                onDismiss = { showShareDialog = false }
             )
         }
 
@@ -517,13 +570,17 @@ fun StatMetricCard(
 @Composable
 fun TrainingProgramItemCard(
     program: TrainingProgram,
+    isRecommended: Boolean = false,
     onStart: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = CardSurface),
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color.White.copy(0.06f))
+        border = BorderStroke(
+            1.dp,
+            if (isRecommended) NeonGreen.copy(0.35f) else Color.White.copy(0.06f)
+        )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -551,7 +608,7 @@ fun TrainingProgramItemCard(
                                 .padding(horizontal = 8.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = program.difficulty.uppercase(),
+                                text = if (isRecommended) "START HERE" else program.difficulty.uppercase(),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = badgeColor
@@ -699,6 +756,20 @@ fun ManualLoggingDialog(
                     modifier = Modifier.fillMaxWidth().testTag("manual_sets_input")
                 )
 
+                val previewReps = repsInput.toIntOrNull()
+                val previewSets = setsInput.toIntOrNull()
+                if (previewReps != null && previewReps > 0 && previewSets != null && previewSets > 0) {
+                    val breakdown = WorkoutRepository.splitRepsAcrossSets(previewReps, previewSets)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Set breakdown (${breakdown.size} sets): ${breakdown.joinToString(" • ")} reps",
+                        color = NeonGreen,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
                 if (errorText.isNotEmpty()) {
                     Text(
                         text = errorText,
@@ -727,10 +798,16 @@ fun ManualLoggingDialog(
                         onClick = {
                             val reps = repsInput.toIntOrNull()
                             val sets = setsInput.toIntOrNull()
-                            if (reps != null && reps > 0 && sets != null && sets > 0) {
-                                onSave(reps, sets)
-                            } else {
-                                errorText = "Please enter valid numbers higher than 0."
+                            when {
+                                reps == null || reps <= 0 || sets == null || sets <= 0 -> {
+                                    errorText = "Please enter valid numbers higher than 0."
+                                }
+                                sets > reps -> {
+                                    errorText = "Number of sets cannot exceed total push-ups."
+                                }
+                                else -> {
+                                    onSave(reps, sets)
+                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen),
@@ -757,8 +834,16 @@ fun WorkoutSessionOverlay(
     val currentRepCount by viewModel.currentRepCount.collectAsState()
     val restTimeLeft by viewModel.restTimeLeft.collectAsState()
     val handsFreeCounting by viewModel.isProximityCountingEnabled.collectAsState()
+    val showCalibrationDialog by viewModel.showSensorCalibrationDialog.collectAsState()
+    val isSensorNear by viewModel.isSensorNear.collectAsState()
+    val calibrationStep by viewModel.calibrationStep.collectAsState()
+    val weeklyPushups by viewModel.weeklyPushUps.collectAsState()
+    val streak by viewModel.currentStreak.collectAsState()
+    val personalBest by viewModel.personalBest.collectAsState()
+    val preferences by viewModel.preferences.collectAsState()
 
     var showExitDialog by remember { mutableStateOf(false) }
+    var showShareResultDialog by remember { mutableStateOf(false) }
 
     // Intercept Back button during workout to prevent losing progress
     BackHandler(enabled = true) {
@@ -1004,7 +1089,7 @@ fun WorkoutSessionOverlay(
                         }
                     }
 
-                    // Hands-Free proximity auto-counter card
+                    // Hands-Free proximity auto-counter card with sensor availability & calibration
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = CardSurface),
@@ -1018,9 +1103,12 @@ fun WorkoutSessionOverlay(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.Sensors,
+                                    imageVector = if (viewModel.hasProximitySensor) Icons.Default.Sensors else Icons.Default.TouchApp,
                                     contentDescription = "Sensor config",
                                     tint = if (handsFreeCounting) NeonGreen else TextGray,
                                     modifier = Modifier.size(24.dp)
@@ -1028,28 +1116,57 @@ fun WorkoutSessionOverlay(
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
                                     Text(
-                                        text = "Hands-Free Sensor",
+                                        text = if (viewModel.hasProximitySensor) "Hands-Free Sensor" else "Manual Tap Counter",
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (handsFreeCounting) NeonGreen else TextWhite
                                     )
                                     Text(
-                                        text = "Place phone on floor under chest",
+                                        text = when {
+                                            !viewModel.hasProximitySensor -> "Proximity sensor unavailable — tap circle or +1 to count"
+                                            handsFreeCounting -> "Active • Counts 1 rep per full down-and-up"
+                                            else -> "Place phone under chest; calibrates before counting"
+                                        },
                                         fontSize = 10.sp,
                                         color = TextGray
                                     )
                                 }
                             }
 
-                            Switch(
-                                checked = handsFreeCounting,
-                                onCheckedChange = { viewModel.toggleProximityCounting(it) },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color(0xFF003818),
-                                    checkedTrackColor = NeonGreen
-                                ),
-                                modifier = Modifier.testTag("proximity_switch")
-                            )
+                            if (viewModel.hasProximitySensor) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (handsFreeCounting) {
+                                        TextButton(
+                                            onClick = { viewModel.openSensorCalibration() },
+                                            modifier = Modifier.testTag("calibrate_sensor_button")
+                                        ) {
+                                            Text("Test", color = AquaBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    Switch(
+                                        checked = handsFreeCounting,
+                                        onCheckedChange = { viewModel.toggleProximityCounting(it) },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = Color(0xFF003818),
+                                            checkedTrackColor = NeonGreen
+                                        ),
+                                        modifier = Modifier.testTag("proximity_switch")
+                                    )
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .background(AquaBlue.copy(0.15f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "TAP MODE",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = AquaBlue
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1160,23 +1277,66 @@ fun WorkoutSessionOverlay(
                         }
                     }
                 } else if (workoutState == "FINISHED") {
-                    Button(
-                        onClick = { viewModel.cancelWorkout() }, // close overlay
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NeonGreen,
-                            contentColor = Color(0xFF003818)
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(54.dp)
-                            .testTag("dismiss_workout_overlay")
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("AWESOME! LOGGED TO HISTORY", fontWeight = FontWeight.Black, fontSize = 15.sp)
+                        if (completedReps.sum() > 0) {
+                            OutlinedButton(
+                                onClick = { showShareResultDialog = true },
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, AquaBlue.copy(0.6f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("share_finished_workout")
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, tint = AquaBlue, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("SHARE RESULT / CHALLENGE FRIEND", color = AquaBlue, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                        }
+
+                        Button(
+                            onClick = { viewModel.cancelWorkout() }, // close overlay
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = NeonGreen,
+                                contentColor = Color(0xFF003818)
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(54.dp)
+                                .testTag("dismiss_workout_overlay")
+                        ) {
+                            Text("AWESOME! LOGGED TO HISTORY", fontWeight = FontWeight.Black, fontSize = 15.sp)
+                        }
                     }
                 }
             }
         }
+    }
+
+    if (showCalibrationDialog) {
+        SensorCalibrationDialog(
+            calibrationStep = calibrationStep,
+            isSensorNear = isSensorNear,
+            onDone = { viewModel.dismissSensorCalibration() },
+            onUseManualFallback = { viewModel.switchToManualTapCounting() }
+        )
+    }
+
+    if (showShareResultDialog) {
+        ShareProgressDialog(
+            weeklyPushUps = weeklyPushups,
+            weeklyTarget = preferences?.weeklyTarget ?: 100,
+            streakDays = streak,
+            personalBest = personalBest,
+            lastSessionReps = completedReps.sum(),
+            initialType = ShareCardType.CHALLENGE,
+            onShareTriggered = { viewModel.recordShareInitiated() },
+            onDismiss = { showShareResultDialog = false }
+        )
     }
 
     // Exit confirmation dialog to prevent accidental loss

@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 class WorkoutRepository(private val workoutDao: WorkoutDao) {
     private val initMutex = Mutex()
@@ -24,20 +27,28 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
         if (isInitialized) return
         initMutex.withLock {
             if (isInitialized) return
-            
+
             val preferences = workoutDao.getUserPreferences()
             if (preferences == null) {
-                // Prepopulate
-                workoutDao.insertUserPreferences(UserPreferences())
-                
+                // Prepopulate with beginner-friendly defaults; onboarding lets users customize or skip
+                workoutDao.insertUserPreferences(
+                    UserPreferences(
+                        weeklyTarget = 100,
+                        voiceCoachEnabled = true,
+                        notificationsEnabled = false,
+                        hasCompletedOnboarding = false,
+                        experienceLevel = "Beginner"
+                    )
+                )
+
                 val plans = listOf(
-                    DailyPlan(1, "Monday", true, "18:00", 50),
-                    DailyPlan(2, "Tuesday", false, "18:00", 50),
-                    DailyPlan(3, "Wednesday", true, "18:00", 75),
-                    DailyPlan(4, "Thursday", false, "18:00", 50),
-                    DailyPlan(5, "Friday", true, "18:00", 100),
-                    DailyPlan(6, "Saturday", false, "10:00", 50),
-                    DailyPlan(7, "Sunday", false, "10:00", 50)
+                    DailyPlan(1, "Monday", true, "18:00", 35),
+                    DailyPlan(2, "Tuesday", false, "18:00", 35),
+                    DailyPlan(3, "Wednesday", true, "18:00", 35),
+                    DailyPlan(4, "Thursday", false, "18:00", 35),
+                    DailyPlan(5, "Friday", true, "18:00", 30),
+                    DailyPlan(6, "Saturday", false, "10:00", 30),
+                    DailyPlan(7, "Sunday", false, "10:00", 30)
                 )
                 workoutDao.insertDailyPlans(plans)
 
@@ -45,11 +56,11 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
                     ChallengeGoal("goal_total_min", "Quick Start: 10 Push-ups", "Log a single session with at least 10 push-ups", 10, 0, false, "BEGINNER", "SINGLE_SESSION", "star"),
                     ChallengeGoal("goal_total_100", "Centurion: 100 Total Push-ups", "Reach a total of 100 cumulative push-ups", 100, 0, false, "BEGINNER", "TOTAL_PUSHUPS", "fitness_center"),
                     ChallengeGoal("goal_streak_3", "Dynamic Trio: 3-Day Streak", "Achieve 3 consecutive active check-ins", 3, 0, false, "BEGINNER", "STREAK", "local_fire_department"),
-                    
+
                     ChallengeGoal("goal_single_50", "Half Century: 50 Reps", "Complete a session containing 50 push-ups", 50, 0, false, "INTERMEDIATE", "SINGLE_SESSION", "star_half"),
                     ChallengeGoal("goal_total_1000", "Iron Milestone: 1,000 Push-ups", "Reach 1,000 total push-ups done", 1000, 0, false, "INTERMEDIATE", "TOTAL_PUSHUPS", "workspace_premium"),
                     ChallengeGoal("goal_streak_7", "Consistency King: 7-Day Streak", "Keep the fire alive for 7 days consecutive", 7, 0, false, "INTERMEDIATE", "STREAK", "local_fire_department"),
-                    
+
                     ChallengeGoal("goal_single_100", "Century Club: 100 Reps", "Complete 100 push-ups in a single session", 100, 0, false, "ADVANCED", "SINGLE_SESSION", "military_tech"),
                     ChallengeGoal("goal_total_5000", "Push-up Titan: 5,000 Total", "Achieve a total of 5,000 lifetime push-ups", 5000, 0, false, "ADVANCED", "TOTAL_PUSHUPS", "emoji_events"),
                     ChallengeGoal("goal_streak_30", "Unstoppable: 30-Day Challenge", "Maintain a workout log streak for 30 consecutive days", 30, 0, false, "ADVANCED", "STREAK", "trending_up")
@@ -58,6 +69,16 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
             }
             isInitialized = true
         }
+    }
+
+    suspend fun getAllDailyPlansSync(): List<DailyPlan> {
+        ensureInitialized()
+        return workoutDao.getAllDailyPlansSync()
+    }
+
+    suspend fun getUserPreferencesSync(): UserPreferences? {
+        ensureInitialized()
+        return workoutDao.getUserPreferences()
     }
 
     suspend fun logSession(session: WorkoutSession) {
@@ -90,6 +111,47 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
         workoutDao.insertUserPreferences(prefs)
     }
 
+    suspend fun applyOnboardingSetup(
+        experienceLevel: String,
+        weeklyTarget: Int,
+        enabledDays: Set<Int>
+    ) {
+        ensureInitialized()
+        val current = workoutDao.getUserPreferences() ?: UserPreferences()
+        workoutDao.insertUserPreferences(
+            current.copy(
+                weeklyTarget = weeklyTarget.coerceAtLeast(10),
+                experienceLevel = experienceLevel,
+                hasCompletedOnboarding = true
+            )
+        )
+
+        val existingPlans = workoutDao.getAllDailyPlansSync()
+        val activeDayCount = enabledDays.size.coerceAtLeast(1)
+        val perDayTargets = splitRepsAcrossSets(weeklyTarget.coerceAtLeast(10), activeDayCount)
+        var targetIdx = 0
+
+        val updatedPlans = existingPlans.map { plan ->
+            val enabled = plan.dayOfWeek in enabledDays
+            if (enabled) {
+                val daily = perDayTargets.getOrElse(targetIdx) { plan.dailyTarget }
+                targetIdx++
+                plan.copy(isEnabled = true, dailyTarget = daily)
+            } else {
+                plan.copy(isEnabled = false)
+            }
+        }
+        if (updatedPlans.isNotEmpty()) {
+            workoutDao.insertDailyPlans(updatedPlans)
+        }
+    }
+
+    suspend fun markOnboardingCompleted() {
+        ensureInitialized()
+        val current = workoutDao.getUserPreferences() ?: UserPreferences()
+        workoutDao.insertUserPreferences(current.copy(hasCompletedOnboarding = true))
+    }
+
     suspend fun updateChallengeGoal(goal: ChallengeGoal) {
         ensureInitialized()
         workoutDao.updateChallengeGoal(goal)
@@ -98,7 +160,7 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
     suspend fun recalculateProgress() {
         val sessions = workoutDao.getAllSessions().firstOrNull() ?: emptyList()
         val goals = workoutDao.getAllChallengeGoals().firstOrNull() ?: emptyList()
-        
+
         val totalPushUps = sessions.sumOf { it.totalPushUps }
         val maxSingleSession = sessions.maxOfOrNull { it.totalPushUps } ?: 0
         val currentStreak = calculateStreak(sessions)
@@ -113,23 +175,23 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
             val completed = newValue >= goal.targetValue
             goal.copy(currentValue = newValue, isCompleted = completed)
         }
-        
+
         workoutDao.insertChallengeGoals(updatedGoals)
     }
 
     fun calculateStreak(sessions: List<WorkoutSession>): Int {
         if (sessions.isEmpty()) return 0
-        val sdf = SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
-        
-        val uniqueDays = sessions.map { sdf.format(java.util.Date(it.timestamp)) }
+        val sdf = SimpleDateFormat("yyyyMMdd", Locale.US)
+
+        val uniqueDays = sessions.map { sdf.format(Date(it.timestamp)) }
             .distinct()
             .sortedDescending()
-        
+
         if (uniqueDays.isEmpty()) return 0
-        
-        val todayStr = sdf.format(java.util.Date())
-        val yesterdayStr = sdf.format(java.util.Date(System.currentTimeMillis() - 24 * 60 * 60 * 1000))
-        
+
+        val todayStr = sdf.format(Date())
+        val yesterdayStr = sdf.format(Date(System.currentTimeMillis() - 24L * 60 * 60 * 1000))
+
         val lastActiveDay = uniqueDays.first()
         if (lastActiveDay != todayStr && lastActiveDay != yesterdayStr) {
             return 0
@@ -139,19 +201,59 @@ class WorkoutRepository(private val workoutDao: WorkoutDao) {
         var currentCheckMillis = System.currentTimeMillis()
         var checkDayStr = lastActiveDay
         var checkIndex = 0
-        
+
         while (checkIndex < uniqueDays.size) {
             val idx = uniqueDays.indexOf(checkDayStr)
             if (idx != -1) {
                 streak++
                 currentCheckMillis = sdf.parse(checkDayStr)?.time ?: currentCheckMillis
-                checkDayStr = sdf.format(java.util.Date(currentCheckMillis - 24 * 60 * 60 * 1000))
+                checkDayStr = sdf.format(Date(currentCheckMillis - 24L * 60 * 60 * 1000))
                 checkIndex++
             } else {
                 break
             }
         }
-        
+
         return streak
+    }
+
+    companion object {
+        /**
+         * Sums push-ups from the last 7 calendar days (today and the preceding 6 days),
+         * matching the HistoryScreen 7-day chart window.
+         */
+        fun calculateWeeklyPushUps(
+            sessions: List<WorkoutSession>,
+            referenceTimeMillis: Long = System.currentTimeMillis()
+        ): Int {
+            if (sessions.isEmpty()) return 0
+            val keySdf = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+            val validDayKeys = (0..6).map { offset ->
+                val cal = Calendar.getInstance().apply {
+                    timeInMillis = referenceTimeMillis
+                    add(Calendar.DAY_OF_YEAR, -offset)
+                }
+                keySdf.format(cal.time)
+            }.toSet()
+
+            return sessions
+                .filter { keySdf.format(Date(it.timestamp)) in validDayKeys }
+                .sumOf { it.totalPushUps }
+        }
+
+        /**
+         * Evenly distributes [totalReps] across [setsCount] sets while preserving any remainder
+         * across the first sets so the sum of returned set counts always equals [totalReps].
+         * Example: splitRepsAcrossSets(17, 3) -> [6, 6, 5].
+         */
+        fun splitRepsAcrossSets(totalReps: Int, setsCount: Int): List<Int> {
+            if (totalReps <= 0) return emptyList()
+            val safeSets = setsCount.coerceIn(1, totalReps)
+            val base = totalReps / safeSets
+            val remainder = totalReps % safeSets
+            return List(safeSets) { index ->
+                base + if (index < remainder) 1 else 0
+            }
+        }
     }
 }

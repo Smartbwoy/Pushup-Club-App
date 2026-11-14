@@ -31,6 +31,9 @@ interface WorkoutDao {
     @Query("SELECT * FROM daily_plans ORDER BY dayOfWeek ASC")
     fun getAllDailyPlans(): Flow<List<DailyPlan>>
 
+    @Query("SELECT * FROM daily_plans ORDER BY dayOfWeek ASC")
+    suspend fun getAllDailyPlansSync(): List<DailyPlan>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDailyPlans(plans: List<DailyPlan>)
 

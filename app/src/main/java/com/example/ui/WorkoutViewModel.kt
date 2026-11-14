@@ -15,13 +15,15 @@ import com.example.data.model.TrainingProgram
 import com.example.data.model.UserPreferences
 import com.example.data.model.WorkoutSession
 import com.example.data.repository.WorkoutRepository
+import com.example.data.tracking.MilestoneSnapshot
+import com.example.data.tracking.MilestoneTracker
+import com.example.notifications.ReminderScheduler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -30,15 +32,28 @@ import java.util.Locale
 class WorkoutViewModel(application: Application) : AndroidViewModel(application), SensorEventListener {
     private val db = AppDatabase.getInstance(application)
     private val repository = WorkoutRepository(db.workoutDao)
+    private val milestoneTracker = MilestoneTracker(application)
 
     // TTS Voice Coach
     private var tts: TextToSpeech? = null
     private val _ttsReady = MutableStateFlow(false)
 
+    // Sensor hardware
+    private val sensorManager = application.getSystemService(Application.SENSOR_SERVICE) as SensorManager
+    private val proximitySensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+    val hasProximitySensor: Boolean = proximitySensor != null
+
     init {
         viewModelScope.launch {
             repository.ensureInitialized()
             repository.recalculateProgress()
+            val prefs = repository.getUserPreferencesSync()
+            val plans = repository.getAllDailyPlansSync()
+            ReminderScheduler.syncReminders(
+                context = getApplication(),
+                plans = plans,
+                notificationsEnabled = prefs?.notificationsEnabled == true
+            )
         }
         initializeTts()
     }
@@ -83,8 +98,10 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     val preferences: StateFlow<UserPreferences?> = repository.userPreferencesFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = UserPreferences()
+        initialValue = null
     )
+
+    val milestones: StateFlow<MilestoneSnapshot> = milestoneTracker.snapshot
 
     // Metrics
     val currentStreak: StateFlow<Int> = sessions.map {
@@ -97,6 +114,10 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
 
     val totalPushUps: StateFlow<Int> = sessions.map { list ->
         list.sumOf { it.totalPushUps }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val weeklyPushUps: StateFlow<Int> = sessions.map { list ->
+        WorkoutRepository.calculateWeeklyPushUps(list)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     // Workout Progress state
@@ -121,13 +142,23 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     private val _restTimeLeft = MutableStateFlow(0)
     val restTimeLeft = _restTimeLeft.asStateFlow()
 
+    // Proximity Counting & Calibration State
     private val _isProximityCountingEnabled = MutableStateFlow(false)
     val isProximityCountingEnabled = _isProximityCountingEnabled.asStateFlow()
 
-    // Sensor counting
-    private val sensorManager = application.getSystemService(Application.SENSOR_SERVICE) as SensorManager
-    private val proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+    private val _showSensorCalibrationDialog = MutableStateFlow(false)
+    val showSensorCalibrationDialog = _showSensorCalibrationDialog.asStateFlow()
+
+    private val _isSensorNear = MutableStateFlow(false)
+    val isSensorNear = _isSensorNear.asStateFlow()
+
+    // 0 = Waiting for wave/dip close, 1 = Close detected (pull back), 2 = Verified & ready
+    private val _calibrationStep = MutableStateFlow(0)
+    val calibrationStep = _calibrationStep.asStateFlow()
+
     private var lastProximityTime = 0L
+    private var wasNear = false
+    private var hasSeenFarSinceEnable = false
 
     // Haptic feedback engine
     private val vibrator: android.os.Vibrator? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
@@ -150,32 +181,91 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleProximityCounting(enabled: Boolean) {
-        _isProximityCountingEnabled.value = enabled
+        if (!hasProximitySensor) {
+            _isProximityCountingEnabled.value = false
+            _showSensorCalibrationDialog.value = false
+            return
+        }
         if (enabled) {
             triggerHaptic(60L)
+            wasNear = false
+            hasSeenFarSinceEnable = false
+            _isSensorNear.value = false
+            _calibrationStep.value = 0
+            _isProximityCountingEnabled.value = true
+            _showSensorCalibrationDialog.value = true
             proximitySensor?.let {
                 sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
             }
         } else {
-            sensorManager.unregisterListener(this)
+            disableProximityCounting()
         }
     }
 
+    private fun disableProximityCounting() {
+        _isProximityCountingEnabled.value = false
+        _showSensorCalibrationDialog.value = false
+        _isSensorNear.value = false
+        wasNear = false
+        hasSeenFarSinceEnable = false
+        sensorManager.unregisterListener(this)
+    }
+
+    fun openSensorCalibration() {
+        if (!hasProximitySensor) return
+        _calibrationStep.value = 0
+        _showSensorCalibrationDialog.value = true
+    }
+
+    fun dismissSensorCalibration() {
+        _showSensorCalibrationDialog.value = false
+        // Reset state so user must move from FAR -> NEAR on next rep
+        hasSeenFarSinceEnable = !wasNear
+    }
+
+    fun switchToManualTapCounting() {
+        disableProximityCounting()
+    }
+
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || !_isProximityCountingEnabled.value || _workoutState.value != "RUNNING") return
-        if (event.sensor.type == Sensor.TYPE_PROXIMITY) {
-            val maxRange = event.sensor.maximumRange
-            val distance = event.values[0]
-            val now = System.currentTimeMillis()
-            
-            // Debounced touch-free increment
-            if (distance < maxRange && distance < 8.0f) {
-                if (now - lastProximityTime > 650) {
+        if (event == null || event.sensor.type != Sensor.TYPE_PROXIMITY) return
+        if (!_isProximityCountingEnabled.value) return
+
+        val maxRange = event.sensor.maximumRange
+        if (maxRange <= 0f) return
+        val distance = event.values[0]
+        val nearThreshold = if (maxRange <= 2.0f) maxRange * 0.5f else minOf(maxRange * 0.6f, 5.0f)
+        val isNear = distance < nearThreshold
+        val now = System.currentTimeMillis()
+
+        _isSensorNear.value = isNear
+
+        if (_showSensorCalibrationDialog.value) {
+            if (_calibrationStep.value == 0 && isNear) {
+                _calibrationStep.value = 1
+                triggerHaptic(40L)
+            } else if (_calibrationStep.value == 1 && !isNear) {
+                _calibrationStep.value = 2
+                hasSeenFarSinceEnable = true
+                triggerHaptic(80L)
+            }
+            wasNear = isNear
+            return
+        }
+
+        if (_workoutState.value == "RUNNING") {
+            if (!isNear) {
+                hasSeenFarSinceEnable = true
+            } else if (!wasNear && hasSeenFarSinceEnable) {
+                // Only count once per FAR -> NEAR transition with cooldown
+                if (now - lastProximityTime >= 550L) {
                     incrementRep()
                     lastProximityTime = now
                 }
             }
         }
+
+        wasNear = isNear
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -188,6 +278,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         _currentRepCount.value = 0
         _workoutState.value = "RUNNING"
         _restTimeLeft.value = 0
+        milestoneTracker.recordWorkoutStarted()
         triggerHaptic(80L)
         speak("Manual workout started. Drop down and give me some reps!")
     }
@@ -200,6 +291,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         _currentRepCount.value = 0
         _workoutState.value = "RUNNING"
         _restTimeLeft.value = 0
+        milestoneTracker.recordWorkoutStarted()
         triggerHaptic(80L)
         speak("Starting ${program.name}. Set one target is ${program.sets[0]} reps. Let's do it!")
     }
@@ -229,16 +321,16 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
 
     fun incrementRep() {
         if (_workoutState.value != "RUNNING") return
-        
+
         val target = if (_activeSets.value.isNotEmpty() && _currentSetIndex.value < _activeSets.value.size) {
             _activeSets.value[_currentSetIndex.value]
         } else Int.MAX_VALUE
-        
+
         _currentRepCount.value += 1
         triggerHaptic(35L)
-        
+
         val count = _currentRepCount.value
-        
+
         if (count == target) {
             triggerHaptic(120L)
             speak("$count reps! Set completed. Excellent work.")
@@ -261,7 +353,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         if (_workoutState.value != "RUNNING") return
         val index = _currentSetIndex.value
         val currentCompleted = _completedReps.value.toMutableList()
-        
+
         if (index < currentCompleted.size) {
             currentCompleted[index] = _currentRepCount.value
             _completedReps.value = currentCompleted
@@ -283,7 +375,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         val restTime = _activeProgram.value?.restTimeSeconds ?: 30
         _restTimeLeft.value = restTime
         speak("Resting for $restTime seconds. Recover and breathe.")
-        
+
         restJob = viewModelScope.launch {
             while (_restTimeLeft.value > 0) {
                 delay(1000)
@@ -317,6 +409,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         _currentSetIndex.value += 1
         _currentRepCount.value = 0
         _workoutState.value = "RUNNING"
+        hasSeenFarSinceEnable = !wasNear
         val nextSetIndex = _currentSetIndex.value
         val nextTarget = if (nextSetIndex < _activeSets.value.size) _activeSets.value[nextSetIndex] else 10
         triggerHaptic(80L)
@@ -325,22 +418,23 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
 
     fun finishWorkout() {
         restJob?.cancel()
+        disableProximityCounting()
         _workoutState.value = "FINISHED"
-        
+
         val finalCompleted = _completedReps.value.toMutableList()
         val index = _currentSetIndex.value
         if (index < finalCompleted.size) {
             finalCompleted[index] = _currentRepCount.value
             _completedReps.value = finalCompleted
         }
-        
+
         // Take sets up to the active set index
         val activeCompleted = finalCompleted.take(index + 1)
         val totalPushups = activeCompleted.sum()
         val setsRecorded = activeCompleted.size.coerceAtLeast(1)
         val repsString = activeCompleted.joinToString(",")
         val restTime = _activeProgram.value?.restTimeSeconds ?: 30
-        
+
         viewModelScope.launch {
             if (totalPushups > 0) {
                 val session = WorkoutSession(
@@ -351,6 +445,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
                     programId = _activeProgram.value?.id
                 )
                 repository.logSession(session)
+                milestoneTracker.recordWorkoutSaved()
                 triggerHaptic(150L)
                 speak("Success! You crushed $totalPushups push-ups in total. Awesome work!")
             } else {
@@ -361,6 +456,7 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
 
     fun cancelWorkout() {
         restJob?.cancel()
+        disableProximityCounting()
         _workoutState.value = "IDLE"
         _activeProgram.value = null
         _activeSets.value = emptyList()
@@ -371,15 +467,18 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun logManualCount(count: Int, sets: Int) {
+        if (count <= 0) return
         viewModelScope.launch {
-            val repsPerSet = if (sets > 0) count / sets else count
+            val splitSets = WorkoutRepository.splitRepsAcrossSets(count, sets)
             val session = WorkoutSession(
                 totalPushUps = count,
-                setsCount = sets,
-                repsListString = List(sets) { repsPerSet }.joinToString(","),
+                setsCount = splitSets.size,
+                repsListString = splitSets.joinToString(","),
                 restTimeSeconds = 30
             )
             repository.logSession(session)
+            milestoneTracker.recordWorkoutStarted()
+            milestoneTracker.recordWorkoutSaved()
             speak("Logged $count push-ups offline.")
         }
     }
@@ -400,6 +499,13 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
     fun updatePlan(plan: DailyPlan) {
         viewModelScope.launch {
             repository.updateDailyPlan(plan)
+            val allPlans = repository.getAllDailyPlansSync()
+            val prefs = repository.getUserPreferencesSync()
+            ReminderScheduler.syncReminders(
+                context = getApplication(),
+                plans = allPlans,
+                notificationsEnabled = prefs?.notificationsEnabled == true
+            )
         }
     }
 
@@ -412,7 +518,65 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
                 notificationsEnabled = notificationsEnabled
             )
             repository.updateUserPreferences(updated)
+            val allPlans = repository.getAllDailyPlansSync()
+            ReminderScheduler.syncReminders(
+                context = getApplication(),
+                plans = allPlans,
+                notificationsEnabled = notificationsEnabled
+            )
         }
+    }
+
+    fun completeOnboarding(
+        experienceLevel: String,
+        weeklyTarget: Int,
+        enabledDays: Set<Int>,
+        startWorkoutImmediately: Boolean
+    ) {
+        viewModelScope.launch {
+            repository.applyOnboardingSetup(
+                experienceLevel = experienceLevel,
+                weeklyTarget = weeklyTarget,
+                enabledDays = enabledDays
+            )
+            milestoneTracker.recordSetupCompleted()
+            val allPlans = repository.getAllDailyPlansSync()
+            val prefs = repository.getUserPreferencesSync()
+            ReminderScheduler.syncReminders(
+                context = getApplication(),
+                plans = allPlans,
+                notificationsEnabled = prefs?.notificationsEnabled == true
+            )
+            if (startWorkoutImmediately) {
+                val starter = when (experienceLevel) {
+                    "Intermediate" -> TrainingProgram.programs.getOrNull(1)
+                    "Advanced" -> TrainingProgram.programs.getOrNull(2)
+                    else -> TrainingProgram.programs.firstOrNull()
+                }
+                if (starter != null) {
+                    startProgramWorkout(starter)
+                } else {
+                    startManualWorkout()
+                }
+            }
+        }
+    }
+
+    fun skipOnboardingAndStartWorkout() {
+        viewModelScope.launch {
+            repository.markOnboardingCompleted()
+            milestoneTracker.recordSetupSkipped()
+            val starter = TrainingProgram.programs.firstOrNull()
+            if (starter != null) {
+                startProgramWorkout(starter)
+            } else {
+                startManualWorkout()
+            }
+        }
+    }
+
+    fun recordShareInitiated() {
+        milestoneTracker.recordShareInitiated()
     }
 
     override fun onCleared() {
